@@ -1,6 +1,6 @@
 streamlit
 pandas
-sqlite3
+psycopg2-binary
+python-dotenv
 gspread
 oauth2client
-psycopg2-binary
