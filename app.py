@@ -5,21 +5,20 @@ from datetime import date, datetime
 from db import init_db, exec_query, placeholder
 from sheets import get_steps_raw
 
-# ---------------- CONFIG ----------------
+# ================= CONFIG =================
 st.set_page_config(layout="wide")
 init_db()
 
 ORDER_STATUSES = ["Not Started", "In Progress", "Completed", "Cancelled"]
+ph = placeholder()
 
-# ---------------- SESSION STATE ----------------
+# ================= SESSION =================
 st.session_state.setdefault("mode", "Operations")
 st.session_state.setdefault("selected_product", None)
 st.session_state.setdefault("view_mode", "orders")
 st.session_state.setdefault("active_po_id", None)
 
-ph = placeholder()
-
-# ---------------- HELPERS ----------------
+# ================= HELPERS =================
 def fetch_products(active_only=True):
     q = "SELECT id, product_name, sheet_name, active FROM products"
     if active_only:
@@ -36,10 +35,13 @@ def fetch_orders(product_id):
         WHERE product_id = {ph}
         ORDER BY po_date DESC
         """,
-        (product_id,),
+        (int(product_id),),
         fetch=True
     )
-    return pd.DataFrame(rows, columns=["id", "po_number", "customer", "po_date", "status"])
+    return pd.DataFrame(
+        rows,
+        columns=["id", "po_number", "customer", "po_date", "status"]
+    )
 
 
 def fetch_po_steps(po_id):
@@ -50,7 +52,7 @@ def fetch_po_steps(po_id):
         WHERE po_id = {ph}
         ORDER BY step_index
         """,
-        (po_id,),
+        (int(po_id),),
         fetch=True
     )
     return pd.DataFrame(
@@ -58,37 +60,39 @@ def fetch_po_steps(po_id):
         columns=["id", "step_index", "step_description", "status", "remark", "updated_on"]
     )
 
-# ---------------- SIDEBAR ----------------
+
+# ================= SIDEBAR =================
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
 
-# ---------------- ADMIN ----------------
+# ================= ADMIN =================
 if st.session_state.mode == "Admin":
     st.subheader("🛠 Admin – Product Management")
 
     products = fetch_products(active_only=False)
 
     for _, row in products.iterrows():
+        pid = int(row["id"])
         c1, c2, c3, c4, c5 = st.columns([3, 3, 1, 1, 1])
 
-        name = c1.text_input("Name", row["product_name"], key=f"name_{row.id}")
-        sheet = c2.text_input("Sheet", row["sheet_name"], key=f"sheet_{row.id}")
-        active = c3.checkbox("Active", bool(row["active"]), key=f"active_{row.id}")
+        name = c1.text_input("Name", row["product_name"], key=f"name_{pid}")
+        sheet = c2.text_input("Sheet", row["sheet_name"], key=f"sheet_{pid}")
+        active = c3.checkbox("Active", bool(row["active"]), key=f"active_{pid}")
 
-        if c4.button("Save", key=f"save_{row.id}"):
+        if c4.button("Save", key=f"save_{pid}"):
             exec_query(
                 f"""
                 UPDATE products
                 SET product_name={ph}, sheet_name={ph}, active={ph}
                 WHERE id={ph}
                 """,
-                (name.strip(), sheet.strip(), int(active), row.id)
+                (name.strip(), sheet.strip(), int(active), pid)
             )
             st.success("Updated")
             st.rerun()
 
-        if c5.button("🗑", key=f"del_{row.id}"):
-            exec_query(f"DELETE FROM products WHERE id={ph}", (row.id,))
+        if c5.button("🗑", key=f"del_{pid}"):
+            exec_query(f"DELETE FROM products WHERE id={ph}", (pid,))
             st.warning("Deleted")
             st.rerun()
 
@@ -110,41 +114,42 @@ if st.session_state.mode == "Admin":
         st.success("Product added")
         st.rerun()
 
-# ---------------- OPERATIONS ----------------
+# ================= OPERATIONS =================
 if st.session_state.mode == "Operations":
 
     products = fetch_products()
     if products.empty:
-        st.warning("No active products found")
+        st.warning("No active products")
         st.stop()
 
     product_names = products["product_name"].tolist()
 
-    # ✅ SAFETY GUARD (CRITICAL FIX)
-    if (
-        st.session_state.selected_product is None
-        or st.session_state.selected_product not in product_names
-    ):
-        st.session_state.selected_product = product_names[0]
-        st.rerun()
+    st.sidebar.selectbox(
+        "Select Product",
+        product_names,
+        key="selected_product"
+    )
 
-    st.sidebar.selectbox("Select Product", product_names, key="selected_product")
+    selected = st.session_state.selected_product
+    product_df = products[products["product_name"] == selected]
 
-    product = products[
-        products["product_name"] == st.session_state.selected_product
-    ].iloc[0]
+    if product_df.empty:
+        st.warning("Invalid product selection")
+        st.stop()
 
-    product_id = product.id
-    sheet_name = product.sheet_name
+    product = product_df.iloc[0]
+    product_id = int(product["id"])
+    sheet_name = product["sheet_name"]
 
-    # -------- ORDERS --------
+    # ================= ORDERS =================
     if st.session_state.view_mode == "orders":
-        st.subheader(f"📄 Orders – {product.product_name}")
+        st.subheader(f"📄 Orders – {product['product_name']}")
 
         orders = fetch_orders(product_id)
 
         if not orders.empty:
-            display = orders[["po_number", "customer", "po_date", "status"]]
+            display = orders[["po_number", "customer", "po_date", "status"]].copy()
+            display["po_date"] = pd.to_datetime(display["po_date"]).dt.strftime("%d/%m/%y")
 
             edited = st.data_editor(
                 display,
@@ -152,7 +157,6 @@ if st.session_state.mode == "Operations":
                 num_rows="fixed",
                 column_config={
                     "status": st.column_config.SelectboxColumn(
-                        "Status",
                         options=ORDER_STATUSES
                     )
                 }
@@ -162,8 +166,27 @@ if st.session_state.mode == "Operations":
                 if edited.iloc[i]["status"] != orders.iloc[i]["status"]:
                     exec_query(
                         f"UPDATE purchase_orders SET status={ph} WHERE id={ph}",
-                        (edited.iloc[i]["status"], orders.iloc[i]["id"])
+                        (
+                            edited.iloc[i]["status"],
+                            int(orders.iloc[i]["id"])
+                        )
                     )
+
+            st.divider()
+
+            active_orders = orders[orders["status"] != "Cancelled"]
+            if not active_orders.empty:
+                po_map = {
+                    row["po_number"]: int(row["id"])
+                    for _, row in active_orders.iterrows()
+                }
+
+                selected_po = st.selectbox("Select PO to Track", list(po_map.keys()))
+
+                if st.button("Track Selected PO"):
+                    st.session_state.active_po_id = po_map[selected_po]
+                    st.session_state.view_mode = "steps"
+                    st.rerun()
 
         st.divider()
 
@@ -181,20 +204,28 @@ if st.session_state.mode == "Operations":
                 (po_number, product_id, customer, po_date, status)
                 VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
                 """,
-                (po.strip(), product_id, cust.strip(), po_date.isoformat(), status)
+                (
+                    po.strip(),
+                    product_id,
+                    cust.strip(),
+                    po_date.isoformat(),
+                    status
+                )
             )
             st.success("Order added")
             st.rerun()
 
-    # -------- STEPS --------
+    # ================= STEPS =================
     if st.session_state.view_mode == "steps":
-        st.subheader("🛠 Steps")
-
-        if not st.session_state.active_po_id:
+        po_id = st.session_state.active_po_id
+        if not po_id:
             st.warning("No PO selected")
             st.stop()
 
-        steps = fetch_po_steps(st.session_state.active_po_id)
+        po_id = int(po_id)
+        st.subheader("🛠 Steps")
+
+        steps = fetch_po_steps(po_id)
 
         if steps.empty:
             raw = get_steps_raw(sheet_name)
@@ -205,9 +236,9 @@ if st.session_state.mode == "Operations":
                     (po_id, step_index, step_description, status)
                     VALUES ({ph}, {ph}, {ph}, 'Not Started')
                     """,
-                    (st.session_state.active_po_id, i, step["description"])
+                    (po_id, i, step["description"])
                 )
-            steps = fetch_po_steps(st.session_state.active_po_id)
+            steps = fetch_po_steps(po_id)
 
         display = pd.DataFrame({
             "Done": steps["status"] == "Done",
@@ -234,5 +265,11 @@ if st.session_state.mode == "Operations":
                     updated_on={ph}
                 WHERE id={ph}
                 """,
-                (ed["Description"], new_status, ed["Remark"], new_date, row.id)
+                (
+                    ed["Description"],
+                    new_status,
+                    ed["Remark"],
+                    new_date,
+                    int(row["id"])
+                )
             )
