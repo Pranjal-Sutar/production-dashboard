@@ -217,3 +217,4 @@ if st.session_state.mode == "Operations":
                 """,
                 (ed["Description"], new_status, ed["Remark"], new_date, row.id)
             )
+
