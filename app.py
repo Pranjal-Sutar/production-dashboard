@@ -58,7 +58,6 @@ def fetch_po_steps(po_id):
         columns=["id", "step_index", "step_description", "status", "remark", "updated_on"]
     )
 
-
 # ---------------- SIDEBAR ----------------
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
@@ -120,9 +119,21 @@ if st.session_state.mode == "Operations":
         st.stop()
 
     product_names = products["product_name"].tolist()
+
+    # ✅ SAFETY GUARD (CRITICAL FIX)
+    if (
+        st.session_state.selected_product is None
+        or st.session_state.selected_product not in product_names
+    ):
+        st.session_state.selected_product = product_names[0]
+        st.rerun()
+
     st.sidebar.selectbox("Select Product", product_names, key="selected_product")
 
-    product = products[products["product_name"] == st.session_state.selected_product].iloc[0]
+    product = products[
+        products["product_name"] == st.session_state.selected_product
+    ].iloc[0]
+
     product_id = product.id
     sheet_name = product.sheet_name
 
@@ -134,12 +145,16 @@ if st.session_state.mode == "Operations":
 
         if not orders.empty:
             display = orders[["po_number", "customer", "po_date", "status"]]
+
             edited = st.data_editor(
                 display,
                 use_container_width=True,
                 num_rows="fixed",
                 column_config={
-                    "status": st.column_config.SelectboxColumn(options=ORDER_STATUSES)
+                    "status": st.column_config.SelectboxColumn(
+                        "Status",
+                        options=ORDER_STATUSES
+                    )
                 }
             )
 
@@ -174,6 +189,10 @@ if st.session_state.mode == "Operations":
     # -------- STEPS --------
     if st.session_state.view_mode == "steps":
         st.subheader("🛠 Steps")
+
+        if not st.session_state.active_po_id:
+            st.warning("No PO selected")
+            st.stop()
 
         steps = fetch_po_steps(st.session_state.active_po_id)
 
@@ -217,4 +236,3 @@ if st.session_state.mode == "Operations":
                 """,
                 (ed["Description"], new_status, ed["Remark"], new_date, row.id)
             )
-
