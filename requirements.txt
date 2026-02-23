@@ -1,0 +1,6 @@
+streamlit
+pandas
+sqlite3
+gspread
+oauth2client
+psycopg2-binary
