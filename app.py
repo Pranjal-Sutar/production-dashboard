@@ -134,7 +134,7 @@ if st.session_state.mode == "Operations":
     product_df = products[products["product_name"] == selected]
 
     if product_df.empty:
-        st.warning("Invalid product selection")
+        st.warning("Please select a product")
         st.stop()
 
     product = product_df.iloc[0]
@@ -273,3 +273,4 @@ if st.session_state.mode == "Operations":
                     int(row["id"])
                 )
             )
+
