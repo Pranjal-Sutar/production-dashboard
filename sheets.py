@@ -2,14 +2,10 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 def get_steps_raw(sheet_name):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "streamlit_account.json",
-        scope
+    scope = [...]
+    creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(
+        creds_dict, scope
     )
 
     client = gspread.authorize(creds)
@@ -27,3 +23,4 @@ def get_steps_raw(sheet_name):
         })
 
     return tasks
+
