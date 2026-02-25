@@ -112,7 +112,7 @@ if st.session_state.mode == "Admin":
 Share the Google Sheet with this **service account email** as **Editor**:
 
 📧 **SERVICE ACCOUNT EMAIL**  
-`<your-service-account>@<project-id>.iam.gserviceaccount.com`
+`streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com`
 
 *(This is a system account, not a personal Gmail)*
 
@@ -273,4 +273,5 @@ if st.session_state.mode == "Operations":
                 """,
                 (ed["Description"], new_status, ed["Remark"], new_date, int(row["id"]))
             )
+
 
