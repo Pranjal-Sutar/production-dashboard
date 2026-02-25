@@ -65,10 +65,40 @@ def fetch_po_steps(po_id):
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
 
+
 # ================= ADMIN =================
 if st.session_state.mode == "Admin":
-    st.subheader("🛠 Admin – Product Management")
 
+    st.subheader("🛠 Admin – Product & Steps Management")
+
+    # ---------- GUIDE ----------
+    st.info("""
+### 📘 How to connect Steps (Important)
+
+**1️⃣ Google Sheet Structure**
+- First **3 rows** can be headers / notes (ignored)
+- Actual steps must start from **row 4**
+- Step description must be in **column C**
+
+**2️⃣ Share the Sheet**
+Share the Google Sheet with this **service account email** as **Editor**:
+
+📧 **SERVICE ACCOUNT EMAIL**  
+`<your-service-account>@<project-id>.iam.gserviceaccount.com`
+
+*(This is a system account, not a personal Gmail)*
+
+**3️⃣ Link Sheet to Product**
+- Enter the **exact Google Sheet name**
+- Click **Save**
+- Steps will auto-load for every PO of this product
+
+ℹ️ If the sheet name changes later, just update it here — no code changes needed.
+""")
+
+    st.divider()
+
+    # ---------- PRODUCTS ----------
     products = fetch_products(active_only=False)
 
     for _, row in products.iterrows():
@@ -98,6 +128,7 @@ if st.session_state.mode == "Admin":
 
     st.divider()
 
+    # ---------- ADD PRODUCT ----------
     with st.form("add_product"):
         pname = st.text_input("Product Name")
         sname = st.text_input("Google Sheet Name")
@@ -114,6 +145,7 @@ if st.session_state.mode == "Admin":
         st.success("Product added")
         st.rerun()
 
+
 # ================= OPERATIONS =================
 if st.session_state.mode == "Operations":
 
@@ -123,12 +155,7 @@ if st.session_state.mode == "Operations":
         st.stop()
 
     product_names = products["product_name"].tolist()
-
-    st.sidebar.selectbox(
-        "Select Product",
-        product_names,
-        key="selected_product"
-    )
+    st.sidebar.selectbox("Select Product", product_names, key="selected_product")
 
     selected = st.session_state.selected_product
     product_df = products[products["product_name"] == selected]
@@ -143,8 +170,8 @@ if st.session_state.mode == "Operations":
 
     # ================= ORDERS =================
     if st.session_state.view_mode == "orders":
-        st.subheader(f"📄 Orders – {product['product_name']}")
 
+        st.subheader(f"📄 Orders – {product['product_name']}")
         orders = fetch_orders(product_id)
 
         if not orders.empty:
@@ -156,9 +183,7 @@ if st.session_state.mode == "Operations":
                 use_container_width=True,
                 num_rows="fixed",
                 column_config={
-                    "status": st.column_config.SelectboxColumn(
-                        options=ORDER_STATUSES
-                    )
+                    "status": st.column_config.SelectboxColumn(options=ORDER_STATUSES)
                 }
             )
 
@@ -166,27 +191,20 @@ if st.session_state.mode == "Operations":
                 if edited.iloc[i]["status"] != orders.iloc[i]["status"]:
                     exec_query(
                         f"UPDATE purchase_orders SET status={ph} WHERE id={ph}",
-                        (
-                            edited.iloc[i]["status"],
-                            int(orders.iloc[i]["id"])
-                        )
+                        (edited.iloc[i]["status"], int(orders.iloc[i]["id"]))
                     )
 
-            st.divider()
+        st.divider()
 
-            active_orders = orders[orders["status"] != "Cancelled"]
-            if not active_orders.empty:
-                po_map = {
-                    row["po_number"]: int(row["id"])
-                    for _, row in active_orders.iterrows()
-                }
+        active_orders = orders[orders["status"] != "Cancelled"]
+        if not active_orders.empty:
+            po_map = {row["po_number"]: int(row["id"]) for _, row in active_orders.iterrows()}
+            selected_po = st.selectbox("Select PO to Track", list(po_map.keys()))
 
-                selected_po = st.selectbox("Select PO to Track", list(po_map.keys()))
-
-                if st.button("Track Selected PO"):
-                    st.session_state.active_po_id = po_map[selected_po]
-                    st.session_state.view_mode = "steps"
-                    st.rerun()
+            if st.button("Track Selected PO"):
+                st.session_state.active_po_id = po_map[selected_po]
+                st.session_state.view_mode = "steps"
+                st.rerun()
 
         st.divider()
 
@@ -204,25 +222,15 @@ if st.session_state.mode == "Operations":
                 (po_number, product_id, customer, po_date, status)
                 VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
                 """,
-                (
-                    po.strip(),
-                    product_id,
-                    cust.strip(),
-                    po_date.isoformat(),
-                    status
-                )
+                (po.strip(), product_id, cust.strip(), po_date.isoformat(), status)
             )
             st.success("Order added")
             st.rerun()
 
     # ================= STEPS =================
     if st.session_state.view_mode == "steps":
-        po_id = st.session_state.active_po_id
-        if not po_id:
-            st.warning("No PO selected")
-            st.stop()
 
-        po_id = int(po_id)
+        po_id = int(st.session_state.active_po_id)
         st.subheader("🛠 Steps")
 
         steps = fetch_po_steps(po_id)
@@ -265,12 +273,5 @@ if st.session_state.mode == "Operations":
                     updated_on={ph}
                 WHERE id={ph}
                 """,
-                (
-                    ed["Description"],
-                    new_status,
-                    ed["Remark"],
-                    new_date,
-                    int(row["id"])
-                )
+                (ed["Description"], new_status, ed["Remark"], new_date, int(row["id"]))
             )
-
