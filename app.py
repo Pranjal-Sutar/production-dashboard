@@ -69,35 +69,6 @@ st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
 # ================= ADMIN =================
 if st.session_state.mode == "Admin":
 
-    st.subheader("🛠 Admin – Product & Steps Management")
-
-    # ---------- GUIDE ----------
-    st.info("""
-### 📘 How to connect Steps (Important)
-
-**1️⃣ Google Sheet Structure**
-- First **3 rows** can be headers / notes (ignored)
-- Actual steps must start from **row 4**
-- Step description must be in **column C**
-
-**2️⃣ Share the Sheet**
-Share the Google Sheet with this **service account email** as **Editor**:
-
-📧 **SERVICE ACCOUNT EMAIL**  
-`<your-service-account>@<project-id>.iam.gserviceaccount.com`
-
-*(This is a system account, not a personal Gmail)*
-
-**3️⃣ Link Sheet to Product**
-- Enter the **exact Google Sheet name**
-- Click **Save**
-- Steps will auto-load for every PO of this product
-
-ℹ️ If the sheet name changes later, just update it here — no code changes needed.
-""")
-
-    st.divider()
-
     # ---------- PRODUCTS ----------
     products = fetch_products(active_only=False)
 
@@ -125,6 +96,33 @@ Share the Google Sheet with this **service account email** as **Editor**:
             exec_query(f"DELETE FROM products WHERE id={ph}", (pid,))
             st.warning("Deleted")
             st.rerun()
+
+    st.divider()
+    st.subheader("Want to add a new product? Follow the stpes below")
+
+    # ---------- GUIDE ----------
+    st.info("""
+
+**1️⃣ Google Sheet Structure**
+- First **3 rows** can be headers / notes (ignored)
+- Actual steps must start from **row 4**
+- Step description must be in **column C**
+
+**2️⃣ Share the Sheet**
+Share the Google Sheet with this **service account email** as **Editor**:
+
+📧 **SERVICE ACCOUNT EMAIL**  
+`<your-service-account>@<project-id>.iam.gserviceaccount.com`
+
+*(This is a system account, not a personal Gmail)*
+
+**3️⃣ Link Sheet to Product**
+- Enter the **exact Google Sheet name**
+- Click **Save**
+- Steps will auto-load for every PO of this product
+
+ℹ️ If the sheet name changes later, just update it here — no code changes needed.
+""")
 
     st.divider()
 
@@ -275,3 +273,4 @@ if st.session_state.mode == "Operations":
                 """,
                 (ed["Description"], new_status, ed["Remark"], new_date, int(row["id"]))
             )
+
