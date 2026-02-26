@@ -17,9 +17,11 @@ st.session_state.setdefault("mode", "Operations")
 st.session_state.setdefault("selected_product", None)
 st.session_state.setdefault("view_mode", "orders")
 st.session_state.setdefault("active_po_id", None)
-st.session_state.setdefault("active_po_number", None)       # store label for breadcrumb
-st.session_state.setdefault("confirm_delete_pid", None)     # product pending deletion
-st.session_state.setdefault("last_added_product", None)     # force sidebar to show new product
+st.session_state.setdefault("active_po_number", None)        # store label for breadcrumb
+st.session_state.setdefault("confirm_delete_pid", None)      # product pending deletion
+st.session_state.setdefault("last_added_product", None)      # force sidebar to show new product
+st.session_state.setdefault("confirm_delete_po_id", None)    # PO pending deletion
+st.session_state.setdefault("confirm_delete_po_number", None)
 
 # ================= HELPERS =================
 def fetch_products(active_only=True):
@@ -86,9 +88,9 @@ if st.session_state.mode == "Admin":
         pid = int(row["id"])
         c1, c2, c3, c4, c5 = st.columns([3, 3, 1, 1, 1])
 
-        name = c1.text_input("Name", row["product_name"], key=f"name_{pid}")
-        sheet = c2.text_input("Sheet", row["sheet_name"], key=f"sheet_{pid}")
-        active = c3.checkbox("Active", bool(row["active"]), key=f"active_{pid}")
+        name   = c1.text_input("Name",  row["product_name"], key=f"name_{pid}")
+        sheet  = c2.text_input("Sheet", row["sheet_name"],   key=f"sheet_{pid}")
+        active = c3.checkbox("Active",  bool(row["active"]), key=f"active_{pid}")
 
         if c4.button("Save", key=f"save_{pid}"):
             exec_query(
@@ -103,12 +105,11 @@ if st.session_state.mode == "Admin":
             st.rerun()
 
         if c5.button("🗑", key=f"del_{pid}"):
-            # First click → ask for confirmation
             st.session_state.confirm_delete_pid = pid
 
     # ── Confirmation dialog rendered outside the column loop ──
     if st.session_state.confirm_delete_pid is not None:
-        cpid = st.session_state.confirm_delete_pid
+        cpid  = st.session_state.confirm_delete_pid
         cname = products.loc[products["id"] == cpid, "product_name"].values
         label = cname[0] if len(cname) else f"ID {cpid}"
         st.warning(f"⚠️ Are you sure you want to delete **{label}**? This cannot be undone.")
@@ -153,19 +154,15 @@ Share the Google Sheet with this **service account email** as **Editor**:
 
     # ---------- ADD PRODUCT ----------
     with st.form("add_product"):
-        pname = st.text_input("Product Name")
-        sname = st.text_input("Google Sheet Name")
+        pname  = st.text_input("Product Name")
+        sname  = st.text_input("Google Sheet Name")
         submit = st.form_submit_button("Add Product")
 
     if submit and pname.strip() and sname.strip():
         exec_query(
-            f"""
-            INSERT INTO products (product_name, sheet_name, active)
-            VALUES ({ph}, {ph}, 1)
-            """,
+            f"INSERT INTO products (product_name, sheet_name, active) VALUES ({ph}, {ph}, 1)",
             (pname.strip(), sname.strip())
         )
-        # ── Remember this product so Operations sidebar shows it immediately ──
         st.session_state.last_added_product = pname.strip()
         st.toast(f"Product '{pname.strip()}' added successfully!", icon="✅")
         st.rerun()
@@ -181,34 +178,40 @@ if st.session_state.mode == "Operations":
 
     product_names = products["product_name"].tolist()
 
-    # ── If a brand-new product was just added, force-select it ──
+    # Writing directly into session state BEFORE the selectbox renders is the
+    # only reliable way to override a keyed widget in Streamlit.
+    # Using `index=` is ignored when the key already exists in session state.
+
+    # Force-select a newly added product
     if st.session_state.last_added_product in product_names:
-        default_idx = product_names.index(st.session_state.last_added_product)
+        st.session_state.selected_product   = st.session_state.last_added_product
         st.session_state.last_added_product = None   # consume the flag
-    elif st.session_state.selected_product in product_names:
-        default_idx = product_names.index(st.session_state.selected_product)
-    else:
-        default_idx = 0
 
-    st.sidebar.selectbox("Select Product", product_names, index=default_idx, key="selected_product")
+    # Fallback: if stored value no longer exists (e.g. product deleted), reset to first
+    if st.session_state.selected_product not in product_names:
+        st.session_state.selected_product = product_names[0]
 
-    selected = st.session_state.selected_product
+    st.sidebar.selectbox("Select Product", product_names, key="selected_product")
+
+    selected   = st.session_state.selected_product
     product_df = products[products["product_name"] == selected]
+
+    # ── If the product changed, reset steps view so a stale sheet_name
+    #    is never used to seed steps for a new PO ──
+    if st.session_state.get("_last_product") != selected:
+        go_back()   # clears view_mode, active_po_id, active_po_number
+        st.session_state["_last_product"] = selected
 
     if product_df.empty:
         st.warning("Please select a product")
         st.stop()
 
-    product = product_df.iloc[0]
+    product    = product_df.iloc[0]
     product_id = int(product["id"])
     sheet_name = product["sheet_name"]
 
-    # ── If the user switched product while in steps view, go back to orders ──
-    if (
-        st.session_state.view_mode == "steps"
-        and st.session_state.active_po_id is not None
-    ):
-        # Check the active PO actually belongs to this product
+    # ── If the user switched product while in steps view, return to orders ──
+    if st.session_state.view_mode == "steps" and st.session_state.active_po_id is not None:
         belongs = exec_query(
             f"SELECT 1 FROM purchase_orders WHERE id={ph} AND product_id={ph}",
             (st.session_state.active_po_id, product_id),
@@ -219,12 +222,9 @@ if st.session_state.mode == "Operations":
 
     # ================= BREADCRUMB & BACK NAVIGATION =================
     if st.session_state.view_mode == "steps":
-        # Breadcrumb: Product > PO Number
         crumb_col, back_col = st.columns([8, 1])
         with crumb_col:
-            st.markdown(
-                f"**{product['product_name']}** › `{st.session_state.active_po_number or 'PO'}`"
-            )
+            st.markdown(f"**{product['product_name']}** › `{st.session_state.active_po_number or 'PO'}`")
         with back_col:
             if st.button("⬅ Back", use_container_width=True):
                 go_back()
@@ -238,49 +238,86 @@ if st.session_state.mode == "Operations":
         orders = fetch_orders(product_id)
 
         if not orders.empty:
-            display = orders[["po_number", "customer", "po_date", "status"]].copy()
-            display["po_date"] = pd.to_datetime(display["po_date"]).dt.strftime("%d/%m/%y")
 
-            edited = st.data_editor(
-                display,
-                use_container_width=True,
-                num_rows="fixed",
-                column_config={
-                    "status": st.column_config.SelectboxColumn(options=ORDER_STATUSES)
-                }
-            )
+            # ── Column headers ──
+            h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
+            h1.markdown("**PO Number**")
+            h2.markdown("**Customer**")
+            h3.markdown("**Date**")
+            h4.markdown("**Status**")
+            h5.markdown("**Del**")
 
-            for i in range(len(edited)):
-                if edited.iloc[i]["status"] != orders.iloc[i]["status"]:
+            # ── One row per PO ──
+            for _, row in orders.iterrows():
+                po_id_row = int(row["id"])
+                c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
+
+                c1.write(row["po_number"])
+                c2.write(row["customer"] or "—")
+                c3.write(pd.to_datetime(row["po_date"]).strftime("%d/%m/%y"))
+
+                new_status = c4.selectbox(
+                    "status",
+                    ORDER_STATUSES,
+                    index=ORDER_STATUSES.index(row["status"]) if row["status"] in ORDER_STATUSES else 0,
+                    key=f"status_{po_id_row}",
+                    label_visibility="collapsed"
+                )
+                if new_status != row["status"]:
                     exec_query(
                         f"UPDATE purchase_orders SET status={ph} WHERE id={ph}",
-                        (edited.iloc[i]["status"], int(orders.iloc[i]["id"]))
+                        (new_status, po_id_row)
                     )
+
+                # ── Delete button — sets pending state, does NOT delete immediately ──
+                if c5.button("🗑", key=f"del_po_{po_id_row}", help="Delete this PO"):
+                    st.session_state.confirm_delete_po_id     = po_id_row
+                    st.session_state.confirm_delete_po_number = row["po_number"]
+
+            # ── PO deletion confirmation banner (outside the row loop) ──
+            if st.session_state.confirm_delete_po_id is not None:
+                po_label = st.session_state.confirm_delete_po_number
+                st.warning(
+                    f"⚠️ Delete PO **{po_label}**? "
+                    "This will also permanently remove all its steps and cannot be undone."
+                )
+                yes_col, no_col, _ = st.columns([1, 1, 6])
+                if yes_col.button("✅ Yes, delete", key="confirm_po_yes"):
+                    del_id = st.session_state.confirm_delete_po_id
+                    exec_query(f"DELETE FROM po_steps WHERE po_id={ph}", (del_id,))
+                    exec_query(f"DELETE FROM purchase_orders WHERE id={ph}", (del_id,))
+                    st.session_state.confirm_delete_po_id     = None
+                    st.session_state.confirm_delete_po_number = None
+                    st.toast(f"PO '{po_label}' deleted.", icon="🗑️")
+                    st.rerun()
+                if no_col.button("❌ Cancel", key="confirm_po_no"):
+                    st.session_state.confirm_delete_po_id     = None
+                    st.session_state.confirm_delete_po_number = None
+                    st.rerun()
 
         st.divider()
 
         active_orders = orders[orders["status"] != "Cancelled"] if not orders.empty else orders
         if not active_orders.empty:
-            po_map = {row["po_number"]: int(row["id"]) for _, row in active_orders.iterrows()}
+            po_map      = {row["po_number"]: int(row["id"]) for _, row in active_orders.iterrows()}
             selected_po = st.selectbox("Select PO to Track", list(po_map.keys()))
 
             if st.button("Track Selected PO"):
-                st.session_state.active_po_id = po_map[selected_po]
-                st.session_state.active_po_number = selected_po   # ← save label
-                st.session_state.view_mode = "steps"
+                st.session_state.active_po_id     = po_map[selected_po]
+                st.session_state.active_po_number = selected_po
+                st.session_state.view_mode        = "steps"
                 st.rerun()
 
         st.divider()
 
         with st.form("add_order"):
-            po = st.text_input("PO Number")
-            cust = st.text_input("Customer")
+            po      = st.text_input("PO Number")
+            cust    = st.text_input("Customer")
             po_date = st.date_input("PO Date", value=date.today())
-            status = st.selectbox("Status", ORDER_STATUSES)
-            submit = st.form_submit_button("Add Order")
+            status  = st.selectbox("Status", ORDER_STATUSES)
+            submit  = st.form_submit_button("Add Order")
 
         if submit and po.strip():
-            # ── Guard: prevent duplicate PO numbers for the same product ──
             existing = exec_query(
                 f"SELECT 1 FROM purchase_orders WHERE po_number={ph} AND product_id={ph}",
                 (po.strip(), product_id),
@@ -291,8 +328,7 @@ if st.session_state.mode == "Operations":
             else:
                 exec_query(
                     f"""
-                    INSERT INTO purchase_orders
-                    (po_number, product_id, customer, po_date, status)
+                    INSERT INTO purchase_orders (po_number, product_id, customer, po_date, status)
                     VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
                     """,
                     (po.strip(), product_id, cust.strip(), po_date.isoformat(), status)
@@ -313,29 +349,22 @@ if st.session_state.mode == "Operations":
             for i, step in enumerate(raw, start=1):
                 exec_query(
                     f"""
-                    INSERT INTO po_steps
-                    (po_id, step_index, step_description, status)
+                    INSERT INTO po_steps (po_id, step_index, step_description, status)
                     VALUES ({ph}, {ph}, {ph}, 'Not Started')
                     """,
                     (po_id, i, step["description"])
                 )
             steps = fetch_po_steps(po_id)
 
-        today_str = date.today().strftime("%d/%m/%y")
-
         display = pd.DataFrame({
             "Done": steps["status"] == "Done",
-            # ── KEY FIX: if Done show saved date, else show today's date as a preview ──
             "Date": steps.apply(
-                lambda r: (
-                    datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
-                    if r["updated_on"]
-                    else ""
-                ),
+                lambda r: datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
+                          if r["updated_on"] else "",
                 axis=1
             ),
             "Description": steps["step_description"],
-            "Remark": steps["remark"].fillna("")
+            "Remark":      steps["remark"].fillna("")
         })
 
         edited = st.data_editor(
@@ -343,7 +372,6 @@ if st.session_state.mode == "Operations":
             use_container_width=True,
             num_rows="fixed",
             column_config={
-                # Make Date read-only — it is set automatically
                 "Date": st.column_config.TextColumn(disabled=True),
             }
         )
@@ -351,20 +379,17 @@ if st.session_state.mode == "Operations":
         needs_rerun = False
 
         for i, row in steps.iterrows():
-            ed = edited.iloc[i]
+            ed       = edited.iloc[i]
             new_done = ed["Done"]
             was_done = row["status"] == "Done"
 
-            # Determine new status and date
             if new_done:
                 new_status = "Done"
-                # Preserve original completion date if already done; otherwise stamp today
-                new_date = row["updated_on"] if was_done and row["updated_on"] else date.today().isoformat()
+                new_date   = row["updated_on"] if was_done and row["updated_on"] else date.today().isoformat()
             else:
                 new_status = "Not Started"
-                new_date = None
+                new_date   = None
 
-            # Only write to DB when something actually changed
             if (
                 new_status != row["status"]
                 or ed["Description"] != row["step_description"]
@@ -374,17 +399,33 @@ if st.session_state.mode == "Operations":
                 exec_query(
                     f"""
                     UPDATE po_steps
-                    SET step_description={ph},
-                        status={ph},
-                        remark={ph},
-                        updated_on={ph}
+                    SET step_description={ph}, status={ph}, remark={ph}, updated_on={ph}
                     WHERE id={ph}
                     """,
                     (ed["Description"], new_status, ed["Remark"], new_date, int(row["id"]))
                 )
-                # Rerun only when the Done checkbox changed so the Date column refreshes instantly
                 if new_done != was_done:
                     needs_rerun = True
 
         if needs_rerun:
+            st.rerun()
+
+        # ── Add a custom step row ──
+        st.divider()
+        with st.form("add_step"):
+            new_desc = st.text_input("Step Description", placeholder="Enter new step...")
+            new_rmk  = st.text_input("Remark (optional)")
+            add_step = st.form_submit_button("➕ Add Step")
+
+        if add_step and new_desc.strip():
+            # Next index = current max + 1
+            next_idx = int(steps["step_index"].max()) + 1 if not steps.empty else 1
+            exec_query(
+                f"""
+                INSERT INTO po_steps (po_id, step_index, step_description, status, remark)
+                VALUES ({ph}, {ph}, {ph}, 'Not Started', {ph})
+                """,
+                (po_id, next_idx, new_desc.strip(), new_rmk.strip() or None)
+            )
+            st.toast("Step added.", icon="✅")
             st.rerun()
