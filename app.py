@@ -22,6 +22,7 @@ st.session_state.setdefault("confirm_delete_pid", None)      # product pending d
 st.session_state.setdefault("last_added_product", None)      # force sidebar to show new product
 st.session_state.setdefault("confirm_delete_po_id", None)    # PO pending deletion
 st.session_state.setdefault("confirm_delete_po_number", None)
+st.session_state.setdefault("deleted_po_snapshot", None)     # holds deleted PO + steps for undo
 
 # ================= HELPERS =================
 def fetch_products(active_only=True):
@@ -279,21 +280,65 @@ if st.session_state.mode == "Operations":
                 po_label = st.session_state.confirm_delete_po_number
                 st.warning(
                     f"⚠️ Delete PO **{po_label}**? "
-                    "This will also permanently remove all its steps and cannot be undone."
+                    "This will also remove all its steps. You can undo immediately after."
                 )
                 yes_col, no_col, _ = st.columns([1, 1, 6])
                 if yes_col.button("✅ Yes, delete", key="confirm_po_yes"):
                     del_id = st.session_state.confirm_delete_po_id
+                    # Snapshot PO + steps before deleting so undo is possible
+                    po_row = exec_query(
+                        f"SELECT id, po_number, product_id, customer, po_date, status FROM purchase_orders WHERE id={ph}",
+                        (del_id,), fetch=True
+                    )
+                    steps_rows = exec_query(
+                        f"SELECT step_index, step_description, status, remark, updated_on FROM po_steps WHERE po_id={ph} ORDER BY step_index",
+                        (del_id,), fetch=True
+                    )
+                    st.session_state.deleted_po_snapshot = {
+                        "po":    po_row[0] if po_row else None,
+                        "steps": steps_rows
+                    }
                     exec_query(f"DELETE FROM po_steps WHERE po_id={ph}", (del_id,))
                     exec_query(f"DELETE FROM purchase_orders WHERE id={ph}", (del_id,))
                     st.session_state.confirm_delete_po_id     = None
                     st.session_state.confirm_delete_po_number = None
-                    st.toast(f"PO '{po_label}' deleted.", icon="🗑️")
+                    st.toast(f"PO '{po_label}' deleted. Click Undo to restore.", icon="🗑️")
                     st.rerun()
                 if no_col.button("❌ Cancel", key="confirm_po_no"):
                     st.session_state.confirm_delete_po_id     = None
                     st.session_state.confirm_delete_po_number = None
                     st.rerun()
+
+            # Undo banner shown after deletion until user restores or dismisses
+            if st.session_state.deleted_po_snapshot is not None:
+                snap    = st.session_state.deleted_po_snapshot
+                po_data = snap["po"]
+                if po_data:
+                    undo_label = po_data[1]
+                    st.info(f"🗑️ PO **{undo_label}** was deleted.")
+                    undo_col, dismiss_col, _ = st.columns([1, 1, 6])
+                    if undo_col.button("↩️ Undo", key="undo_po"):
+                        exec_query(
+                            f"INSERT INTO purchase_orders (po_number, product_id, customer, po_date, status) VALUES ({ph}, {ph}, {ph}, {ph}, {ph})",
+                            (po_data[1], po_data[2], po_data[3], po_data[4], po_data[5])
+                        )
+                        new_po_id_row = exec_query(
+                            f"SELECT id FROM purchase_orders WHERE po_number={ph} AND product_id={ph} ORDER BY id DESC LIMIT 1",
+                            (po_data[1], po_data[2]), fetch=True
+                        )
+                        if new_po_id_row:
+                            new_po_id = new_po_id_row[0][0]
+                            for s in snap["steps"]:
+                                exec_query(
+                                    f"INSERT INTO po_steps (po_id, step_index, step_description, status, remark, updated_on) VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})",
+                                    (new_po_id, s[0], s[1], s[2], s[3], s[4])
+                                )
+                        st.session_state.deleted_po_snapshot = None
+                        st.toast(f"PO '{undo_label}' restored!", icon="↩️")
+                        st.rerun()
+                    if dismiss_col.button("✖ Dismiss", key="dismiss_undo"):
+                        st.session_state.deleted_po_snapshot = None
+                        st.rerun()
 
         st.divider()
 
