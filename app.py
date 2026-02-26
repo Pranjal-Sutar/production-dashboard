@@ -197,11 +197,13 @@ if st.session_state.mode == "Operations":
     selected   = st.session_state.selected_product
     product_df = products[products["product_name"] == selected]
 
-    # ── If the product changed, reset steps view so a stale sheet_name
-    #    is never used to seed steps for a new PO ──
-    if st.session_state.get("_last_product") != selected:
+    # If the user actively switched to a different product, reset to orders view.
+    # We only do this when the product changes AND the user is not in the middle
+    # of navigating into steps (i.e. active_po_id already set for this product).
+    prev = st.session_state.get("_last_product")
+    if prev is not None and prev != selected:
         go_back()   # clears view_mode, active_po_id, active_po_number
-        st.session_state["_last_product"] = selected
+    st.session_state["_last_product"] = selected
 
     if product_df.empty:
         st.warning("Please select a product")
