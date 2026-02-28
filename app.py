@@ -139,7 +139,7 @@ if st.session_state.mode == "Admin":
 Share the Google Sheet with this **service account email** as **Editor**:
 
 📧 **SERVICE ACCOUNT EMAIL**  
-``
+`streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com`
 
 *(This is a system account, not a personal Gmail)*
 
@@ -476,4 +476,5 @@ if st.session_state.mode == "Operations":
             )
             st.toast("Step added.", icon="✅")
             st.rerun()
+
 
