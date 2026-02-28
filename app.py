@@ -225,7 +225,7 @@ if st.session_state.mode == "Operations":
 
     # ================= BREADCRUMB & BACK NAVIGATION =================
     if st.session_state.view_mode == "steps":
-        crumb_col, back_col = st.columns([8, 1])
+        back_col, crumb_col = st.columns([8, 1])
         with crumb_col:
             st.markdown(f"**{product['product_name']}** › `{st.session_state.active_po_number or 'PO'}`")
         with back_col:
@@ -476,3 +476,4 @@ if st.session_state.mode == "Operations":
             )
             st.toast("Step added.", icon="✅")
             st.rerun()
+
