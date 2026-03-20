@@ -260,8 +260,24 @@ if st.session_state.mode == "Operations":
                     border-radius: 6px;
                     padding: 2px 0px;
                 }
+                div[data-testid="stHorizontalBlock"]:has(div.overdue-row) p,
+                div[data-testid="stHorizontalBlock"]:has(div.overdue-row) div.overdue-row {
+                    color: #7a0000 !important;
+                    font-weight: 500;
+                }
                 </style>
             """, unsafe_allow_html=True)
+
+            # ── Overdue alert banner ──
+            overdue_orders = orders[orders.apply(is_overdue, axis=1)]
+            if not overdue_orders.empty:
+                po_list = ", ".join(f"**{r}**" for r in overdue_orders["po_number"].tolist())
+                count   = len(overdue_orders)
+                st.warning(
+                    f"⚠️ {count} order(s) have **not been started** even after 25 days: {po_list}. "
+                    "Please take action immediately.",
+                    icon="🚨"
+                )
 
             # ── Column headers ──
             h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
