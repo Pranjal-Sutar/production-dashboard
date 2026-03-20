@@ -74,6 +74,23 @@ def go_back():
     st.session_state.active_po_number = None
 
 
+def days_since(po_date_str):
+    """Return number of days elapsed since PO date, or 0 if not parseable."""
+    try:
+        po_date = pd.to_datetime(po_date_str).date()
+        return (date.today() - po_date).days
+    except Exception:
+        return 0
+
+
+def is_overdue(row, threshold=25):
+    """Return True if a PO is older than threshold days and not finished."""
+    return (
+        days_since(row["po_date"]) >= threshold
+        and row["status"] not in ("Completed", "Cancelled")
+    )
+
+
 # ================= SIDEBAR =================
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
@@ -179,16 +196,12 @@ if st.session_state.mode == "Operations":
 
     product_names = products["product_name"].tolist()
 
-    # Writing directly into session state BEFORE the selectbox renders is the
-    # only reliable way to override a keyed widget in Streamlit.
-    # Using `index=` is ignored when the key already exists in session state.
-
     # Force-select a newly added product
     if st.session_state.last_added_product in product_names:
         st.session_state.selected_product   = st.session_state.last_added_product
-        st.session_state.last_added_product = None   # consume the flag
+        st.session_state.last_added_product = None
 
-    # Fallback: if stored value no longer exists (e.g. product deleted), reset to first
+    # Fallback: if stored value no longer exists, reset to first
     if st.session_state.selected_product not in product_names:
         st.session_state.selected_product = product_names[0]
 
@@ -197,12 +210,9 @@ if st.session_state.mode == "Operations":
     selected   = st.session_state.selected_product
     product_df = products[products["product_name"] == selected]
 
-    # If the user actively switched to a different product, reset to orders view.
-    # We only do this when the product changes AND the user is not in the middle
-    # of navigating into steps (i.e. active_po_id already set for this product).
     prev = st.session_state.get("_last_product")
     if prev is not None and prev != selected:
-        go_back()   # clears view_mode, active_po_id, active_po_number
+        go_back()
     st.session_state["_last_product"] = selected
 
     if product_df.empty:
@@ -225,7 +235,7 @@ if st.session_state.mode == "Operations":
 
     # ================= BREADCRUMB & BACK NAVIGATION =================
     if st.session_state.view_mode == "steps":
-        back_col, crumb_col = st.columns([1,8])
+        back_col, crumb_col = st.columns([1, 8])
         with crumb_col:
             st.markdown(f"**{product['product_name']}** › `{st.session_state.active_po_number or 'PO'}`")
         with back_col:
@@ -240,6 +250,16 @@ if st.session_state.mode == "Operations":
         st.subheader(f"📄 Orders – {product['product_name']}")
         orders = fetch_orders(product_id)
 
+        # ── Overdue warning banner ──
+        if not orders.empty:
+            overdue_orders = orders[orders.apply(is_overdue, axis=1)]
+            if not overdue_orders.empty:
+                po_list = ", ".join(f"**{r}**" for r in overdue_orders["po_number"].tolist())
+                st.error(
+                    f"🔴 {len(overdue_orders)} order(s) are 25+ days old and not yet completed: {po_list}",
+                    icon="⚠️"
+                )
+
         if not orders.empty:
 
             # ── Column headers ──
@@ -252,12 +272,21 @@ if st.session_state.mode == "Operations":
 
             # ── One row per PO ──
             for _, row in orders.iterrows():
-                po_id_row = int(row["id"])
+                po_id_row  = int(row["id"])
+                age        = days_since(row["po_date"])
+                overdue    = is_overdue(row)
+
                 c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
 
-                c1.write(row["po_number"])
+                # PO number — flag overdue ones with red icon and age
+                po_label = f"🔴 {row['po_number']} ({age}d)" if overdue else row["po_number"]
+                c1.write(po_label)
+
                 c2.write(row["customer"] or "—")
-                c3.write(pd.to_datetime(row["po_date"]).strftime("%d/%m/%y"))
+
+                # Date — append red dot for overdue
+                date_str = pd.to_datetime(row["po_date"]).strftime("%d/%m/%y")
+                c3.write(f"{date_str} 🔴" if overdue else date_str)
 
                 new_status = c4.selectbox(
                     "status",
@@ -272,12 +301,12 @@ if st.session_state.mode == "Operations":
                         (new_status, po_id_row)
                     )
 
-                # ── Delete button — sets pending state, does NOT delete immediately ──
+                # ── Delete button ──
                 if c5.button("🗑", key=f"del_po_{po_id_row}", help="Delete this PO"):
                     st.session_state.confirm_delete_po_id     = po_id_row
                     st.session_state.confirm_delete_po_number = row["po_number"]
 
-            # ── PO deletion confirmation banner (outside the row loop) ──
+            # ── PO deletion confirmation banner ──
             if st.session_state.confirm_delete_po_id is not None:
                 po_label = st.session_state.confirm_delete_po_number
                 st.warning(
@@ -287,7 +316,6 @@ if st.session_state.mode == "Operations":
                 yes_col, no_col, _ = st.columns([1, 1, 6])
                 if yes_col.button("✅ Yes, delete", key="confirm_po_yes"):
                     del_id = st.session_state.confirm_delete_po_id
-                    # Snapshot PO + steps before deleting so undo is possible
                     po_row = exec_query(
                         f"SELECT id, po_number, product_id, customer, po_date, status FROM purchase_orders WHERE id={ph}",
                         (del_id,), fetch=True
@@ -311,7 +339,7 @@ if st.session_state.mode == "Operations":
                     st.session_state.confirm_delete_po_number = None
                     st.rerun()
 
-            # Undo banner shown after deletion until user restores or dismisses
+            # ── Undo banner ──
             if st.session_state.deleted_po_snapshot is not None:
                 snap    = st.session_state.deleted_po_snapshot
                 po_data = snap["po"]
@@ -464,7 +492,6 @@ if st.session_state.mode == "Operations":
             add_step = st.form_submit_button("➕ Add Step")
 
         if add_step and new_desc.strip():
-            # Next index = current max + 1
             next_idx = int(steps["step_index"].max()) + 1 if not steps.empty else 1
             exec_query(
                 f"""
@@ -475,7 +502,3 @@ if st.session_state.mode == "Operations":
             )
             st.toast("Step added.", icon="✅")
             st.rerun()
-
-
-
-
