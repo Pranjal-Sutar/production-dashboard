@@ -84,10 +84,10 @@ def days_since(po_date_str):
 
 
 def is_overdue(row, threshold=25):
-    """Return True if a PO is older than threshold days and not finished."""
+    """Return True if a PO is 'Not Started' and older than threshold days."""
     return (
-        days_since(row["po_date"]) >= threshold
-        and row["status"] not in ("Completed", "Cancelled")
+        row["status"] == "Not Started"
+        and days_since(row["po_date"]) >= threshold
     )
 
 
@@ -250,17 +250,18 @@ if st.session_state.mode == "Operations":
         st.subheader(f"📄 Orders – {product['product_name']}")
         orders = fetch_orders(product_id)
 
-        # ── Overdue warning banner ──
         if not orders.empty:
-            overdue_orders = orders[orders.apply(is_overdue, axis=1)]
-            if not overdue_orders.empty:
-                po_list = ", ".join(f"**{r}**" for r in overdue_orders["po_number"].tolist())
-                st.error(
-                    f"🔴 {len(overdue_orders)} order(s) are 25+ days old and not yet completed: {po_list}",
-                    icon="⚠️"
-                )
 
-        if not orders.empty:
+            # ── Inject CSS once: .row-highlight wraps each overdue row ──
+            st.markdown("""
+                <style>
+                div[data-testid="stHorizontalBlock"]:has(div.overdue-row) {
+                    background-color: #ffe5e5;
+                    border-radius: 6px;
+                    padding: 2px 0px;
+                }
+                </style>
+            """, unsafe_allow_html=True)
 
             # ── Column headers ──
             h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
@@ -272,21 +273,23 @@ if st.session_state.mode == "Operations":
 
             # ── One row per PO ──
             for _, row in orders.iterrows():
-                po_id_row  = int(row["id"])
-                age        = days_since(row["po_date"])
-                overdue    = is_overdue(row)
+                po_id_row = int(row["id"])
+                age       = days_since(row["po_date"])
+                overdue   = row["status"] == "Not Started" and age >= 25
 
                 c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
 
-                # PO number — flag overdue ones with red icon and age
-                po_label = f"🔴 {row['po_number']} ({age}d)" if overdue else row["po_number"]
-                c1.write(po_label)
+                # Inject an invisible tagged div into c1 so CSS can target the parent row
+                if overdue:
+                    c1.markdown(
+                        f'<div class="overdue-row">{row["po_number"]}</div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    c1.write(row["po_number"])
 
                 c2.write(row["customer"] or "—")
-
-                # Date — append red dot for overdue
-                date_str = pd.to_datetime(row["po_date"]).strftime("%d/%m/%y")
-                c3.write(f"{date_str} 🔴" if overdue else date_str)
+                c3.write(pd.to_datetime(row["po_date"]).strftime("%d/%m/%y"))
 
                 new_status = c4.selectbox(
                     "status",
