@@ -142,12 +142,6 @@ if st.session_state.mode == "Admin":
             st.rerun()
 
     st.divider()
-    st.subheader("Want to add a new product? Follow the steps below")
-
-    # ---------- GUIDE ----------
-    st.info("""
-
-st.divider()
 st.subheader("📦 Backup Database")
 
 if st.button("Download Full Backup"):
@@ -184,6 +178,12 @@ if st.button("Download Full Backup"):
         )
 
         st.success("Backup ready! Download all files.")
+
+    st.subheader("Want to add a new product? Follow the steps below")
+
+    # ---------- GUIDE ----------
+    st.info("""
+
 
     except Exception as e:
         st.error(f"Backup failed: {e}")
