@@ -142,46 +142,27 @@ if st.session_state.mode == "Admin":
             st.rerun()
 
     st.divider()
+st.divider()
 st.subheader("📦 Backup Database")
 
-if st.button("Download Full Backup"):
+if st.button("Prepare Backup"):
     try:
-        products = exec_query("SELECT * FROM products", fetch=True)
-        orders   = exec_query("SELECT * FROM purchase_orders", fetch=True)
-        steps    = exec_query("SELECT * FROM po_steps", fetch=True)
-        vendors  = exec_query("SELECT * FROM vendors", fetch=True)
+        st.session_state.backup = {
+            "products": pd.DataFrame(exec_query("SELECT * FROM products", fetch=True)),
+            "orders": pd.DataFrame(exec_query("SELECT * FROM purchase_orders", fetch=True)),
+            "steps": pd.DataFrame(exec_query("SELECT * FROM po_steps", fetch=True)),
+            "vendors": pd.DataFrame(exec_query("SELECT * FROM vendors", fetch=True)),
+        }
+        st.success("Backup ready! Download below 👇")
 
-        df_products = pd.DataFrame(products)
-        df_orders   = pd.DataFrame(orders)
-        df_steps    = pd.DataFrame(steps)
-        df_vendors  = pd.DataFrame(vendors)
-
-        st.download_button(
-            "⬇ Download Products",
-            df_products.to_csv(index=False),
-            file_name="products.csv"
-        )
-        st.download_button(
-            "⬇ Download Orders",
-            df_orders.to_csv(index=False),
-            file_name="purchase_orders.csv"
-        )
-        st.download_button(
-            "⬇ Download Steps",
-            df_steps.to_csv(index=False),
-            file_name="po_steps.csv"
-        )
-        st.download_button(
-            "⬇ Download Vendors",
-            df_vendors.to_csv(index=False),
-            file_name="vendors.csv"
-        )
-
-        st.success("Backup ready! Download all files.")
-
-         except Exception as e:
+    except Exception as e:
         st.error(f"Backup failed: {e}")
 
+if "backup" in st.session_state:
+    st.download_button("⬇ Products", st.session_state.backup["products"].to_csv(index=False), "products.csv")
+    st.download_button("⬇ Orders", st.session_state.backup["orders"].to_csv(index=False), "purchase_orders.csv")
+    st.download_button("⬇ Steps", st.session_state.backup["steps"].to_csv(index=False), "po_steps.csv")
+    st.download_button("⬇ Vendors", st.session_state.backup["vendors"].to_csv(index=False), "vendors.csv")
 st.subheader("Want to add a new product? Follow the steps below")
 
     # ---------- GUIDE ----------
