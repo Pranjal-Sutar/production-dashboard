@@ -147,6 +147,46 @@ if st.session_state.mode == "Admin":
     # ---------- GUIDE ----------
     st.info("""
 
+st.divider()
+st.subheader("📦 Backup Database")
+
+if st.button("Download Full Backup"):
+    try:
+        products = exec_query("SELECT * FROM products", fetch=True)
+        orders   = exec_query("SELECT * FROM purchase_orders", fetch=True)
+        steps    = exec_query("SELECT * FROM po_steps", fetch=True)
+        vendors  = exec_query("SELECT * FROM vendors", fetch=True)
+
+        df_products = pd.DataFrame(products)
+        df_orders   = pd.DataFrame(orders)
+        df_steps    = pd.DataFrame(steps)
+        df_vendors  = pd.DataFrame(vendors)
+
+        st.download_button(
+            "⬇ Download Products",
+            df_products.to_csv(index=False),
+            file_name="products.csv"
+        )
+        st.download_button(
+            "⬇ Download Orders",
+            df_orders.to_csv(index=False),
+            file_name="purchase_orders.csv"
+        )
+        st.download_button(
+            "⬇ Download Steps",
+            df_steps.to_csv(index=False),
+            file_name="po_steps.csv"
+        )
+        st.download_button(
+            "⬇ Download Vendors",
+            df_vendors.to_csv(index=False),
+            file_name="vendors.csv"
+        )
+
+        st.success("Backup ready! Download all files.")
+
+    except Exception as e:
+        st.error(f"Backup failed: {e}")
 **1️⃣ Google Sheet Structure**
 - First **3 rows** can be headers / notes (ignored)
 - Actual steps must start from **row 4**
