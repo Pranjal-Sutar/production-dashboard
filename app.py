@@ -149,7 +149,6 @@ if st.session_state.mode == "Admin":
                 "products": pd.DataFrame(exec_query("SELECT * FROM products", fetch=True)),
                 "orders":   pd.DataFrame(exec_query("SELECT * FROM purchase_orders", fetch=True)),
                 "steps":    pd.DataFrame(exec_query("SELECT * FROM po_steps", fetch=True)),
-                "vendors":  pd.DataFrame(exec_query("SELECT * FROM vendors", fetch=True)),
             }
             st.success("Backup ready! Download below 👇")
         except Exception as e:
@@ -159,7 +158,6 @@ if st.session_state.mode == "Admin":
         st.download_button("⬇ Products", st.session_state.backup["products"].to_csv(index=False), "products.csv")
         st.download_button("⬇ Orders",   st.session_state.backup["orders"].to_csv(index=False),   "purchase_orders.csv")
         st.download_button("⬇ Steps",    st.session_state.backup["steps"].to_csv(index=False),    "po_steps.csv")
-        st.download_button("⬇ Vendors",  st.session_state.backup["vendors"].to_csv(index=False),  "vendors.csv")
 
     st.divider()
 
