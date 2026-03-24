@@ -17,12 +17,12 @@ st.session_state.setdefault("mode", "Operations")
 st.session_state.setdefault("selected_product", None)
 st.session_state.setdefault("view_mode", "orders")
 st.session_state.setdefault("active_po_id", None)
-st.session_state.setdefault("active_po_number", None)        # store label for breadcrumb
-st.session_state.setdefault("confirm_delete_pid", None)      # product pending deletion
-st.session_state.setdefault("last_added_product", None)      # force sidebar to show new product
-st.session_state.setdefault("confirm_delete_po_id", None)    # PO pending deletion
+st.session_state.setdefault("active_po_number", None)
+st.session_state.setdefault("confirm_delete_pid", None)
+st.session_state.setdefault("last_added_product", None)
+st.session_state.setdefault("confirm_delete_po_id", None)
 st.session_state.setdefault("confirm_delete_po_number", None)
-st.session_state.setdefault("deleted_po_snapshot", None)     # holds deleted PO + steps for undo
+st.session_state.setdefault("deleted_po_snapshot", None)
 
 # ================= HELPERS =================
 def fetch_products(active_only=True):
@@ -68,14 +68,12 @@ def fetch_po_steps(po_id):
 
 
 def go_back():
-    """Reset to orders view and clear active PO."""
     st.session_state.view_mode = "orders"
     st.session_state.active_po_id = None
     st.session_state.active_po_number = None
 
 
 def days_since(po_date_str):
-    """Return number of days elapsed since PO date, or 0 if not parseable."""
     try:
         po_date = pd.to_datetime(po_date_str).date()
         return (date.today() - po_date).days
@@ -84,7 +82,6 @@ def days_since(po_date_str):
 
 
 def is_overdue(row, threshold=25):
-    """Return True if a PO is 'Not Started' and older than threshold days."""
     return (
         row["status"] == "Not Started"
         and days_since(row["po_date"]) >= threshold
@@ -125,7 +122,7 @@ if st.session_state.mode == "Admin":
         if c5.button("🗑", key=f"del_{pid}"):
             st.session_state.confirm_delete_pid = pid
 
-    # ── Confirmation dialog rendered outside the column loop ──
+    # ── Confirmation dialog ──
     if st.session_state.confirm_delete_pid is not None:
         cpid  = st.session_state.confirm_delete_pid
         cname = products.loc[products["id"] == cpid, "product_name"].values
@@ -142,11 +139,33 @@ if st.session_state.mode == "Admin":
             st.rerun()
 
     st.divider()
-    st.subheader("Want to add a new product? Follow the steps below")
+
+    # ---------- BACKUP ----------
+    st.subheader("📦 Backup Database")
+
+    if st.button("Prepare Backup"):
+        try:
+            st.session_state.backup = {
+                "products": pd.DataFrame(exec_query("SELECT * FROM products", fetch=True)),
+                "orders":   pd.DataFrame(exec_query("SELECT * FROM purchase_orders", fetch=True)),
+                "steps":    pd.DataFrame(exec_query("SELECT * FROM po_steps", fetch=True)),
+                "vendors":  pd.DataFrame(exec_query("SELECT * FROM vendors", fetch=True)),
+            }
+            st.success("Backup ready! Download below 👇")
+        except Exception as e:
+            st.error(f"Backup failed: {e}")
+
+    if "backup" in st.session_state:
+        st.download_button("⬇ Products", st.session_state.backup["products"].to_csv(index=False), "products.csv")
+        st.download_button("⬇ Orders",   st.session_state.backup["orders"].to_csv(index=False),   "purchase_orders.csv")
+        st.download_button("⬇ Steps",    st.session_state.backup["steps"].to_csv(index=False),    "po_steps.csv")
+        st.download_button("⬇ Vendors",  st.session_state.backup["vendors"].to_csv(index=False),  "vendors.csv")
+
+    st.divider()
 
     # ---------- GUIDE ----------
+    st.subheader("Want to add a new product? Follow the steps below")
     st.info("""
-
 **1️⃣ Google Sheet Structure**
 - First **3 rows** can be headers / notes (ignored)
 - Actual steps must start from **row 4**
@@ -196,12 +215,10 @@ if st.session_state.mode == "Operations":
 
     product_names = products["product_name"].tolist()
 
-    # Force-select a newly added product
     if st.session_state.last_added_product in product_names:
         st.session_state.selected_product   = st.session_state.last_added_product
         st.session_state.last_added_product = None
 
-    # Fallback: if stored value no longer exists, reset to first
     if st.session_state.selected_product not in product_names:
         st.session_state.selected_product = product_names[0]
 
@@ -223,7 +240,6 @@ if st.session_state.mode == "Operations":
     product_id = int(product["id"])
     sheet_name = product["sheet_name"]
 
-    # ── If the user switched product while in steps view, return to orders ──
     if st.session_state.view_mode == "steps" and st.session_state.active_po_id is not None:
         belongs = exec_query(
             f"SELECT 1 FROM purchase_orders WHERE id={ph} AND product_id={ph}",
@@ -233,7 +249,7 @@ if st.session_state.mode == "Operations":
         if not belongs:
             go_back()
 
-    # ================= BREADCRUMB & BACK NAVIGATION =================
+    # ================= BREADCRUMB =================
     if st.session_state.view_mode == "steps":
         back_col, crumb_col = st.columns([1, 8])
         with crumb_col:
@@ -252,7 +268,6 @@ if st.session_state.mode == "Operations":
 
         if not orders.empty:
 
-            # ── Inject CSS once: .row-highlight wraps each overdue row ──
             st.markdown("""
                 <style>
                 div[data-testid="stHorizontalBlock"]:has(div.overdue-row) {
@@ -268,7 +283,6 @@ if st.session_state.mode == "Operations":
                 </style>
             """, unsafe_allow_html=True)
 
-            # ── Overdue alert banner ──
             overdue_orders = orders[orders.apply(is_overdue, axis=1)]
             if not overdue_orders.empty:
                 po_list = ", ".join(f"**{r}**" for r in overdue_orders["po_number"].tolist())
@@ -279,7 +293,6 @@ if st.session_state.mode == "Operations":
                     icon="🚨"
                 )
 
-            # ── Column headers ──
             h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
             h1.markdown("**PO Number**")
             h2.markdown("**Customer**")
@@ -287,7 +300,6 @@ if st.session_state.mode == "Operations":
             h4.markdown("**Status**")
             h5.markdown("**Del**")
 
-            # ── One row per PO ──
             for _, row in orders.iterrows():
                 po_id_row = int(row["id"])
                 age       = days_since(row["po_date"])
@@ -295,7 +307,6 @@ if st.session_state.mode == "Operations":
 
                 c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
 
-                # Inject an invisible tagged div into c1 so CSS can target the parent row
                 if overdue:
                     c1.markdown(
                         f'<div class="overdue-row">{row["po_number"]}</div>',
@@ -320,12 +331,11 @@ if st.session_state.mode == "Operations":
                         (new_status, po_id_row)
                     )
 
-                # ── Delete button ──
                 if c5.button("🗑", key=f"del_po_{po_id_row}", help="Delete this PO"):
                     st.session_state.confirm_delete_po_id     = po_id_row
                     st.session_state.confirm_delete_po_number = row["po_number"]
 
-            # ── PO deletion confirmation banner ──
+            # ── PO deletion confirmation ──
             if st.session_state.confirm_delete_po_id is not None:
                 po_label = st.session_state.confirm_delete_po_number
                 st.warning(
@@ -503,7 +513,6 @@ if st.session_state.mode == "Operations":
         if needs_rerun:
             st.rerun()
 
-        # ── Add a custom step row ──
         st.divider()
         with st.form("add_step"):
             new_desc = st.text_input("Step Description", placeholder="Enter new step...")
