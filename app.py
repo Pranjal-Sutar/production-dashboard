@@ -179,14 +179,14 @@ if st.button("Download Full Backup"):
 
         st.success("Backup ready! Download all files.")
 
-    st.subheader("Want to add a new product? Follow the steps below")
+         except Exception as e:
+        st.error(f"Backup failed: {e}")
+
+st.subheader("Want to add a new product? Follow the steps below")
 
     # ---------- GUIDE ----------
     st.info("""
 
-
-    except Exception as e:
-        st.error(f"Backup failed: {e}")
 **1️⃣ Google Sheet Structure**
 - First **3 rows** can be headers / notes (ignored)
 - Actual steps must start from **row 4**
