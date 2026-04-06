@@ -529,3 +529,50 @@ if st.session_state.mode == "Operations":
             }).execute()
             st.toast("Step added.", icon="✅")
             st.rerun()
+
+
+# ================= CHATBOT =================
+
+st.markdown("---")
+st.subheader("🤖 Assistant")
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+user_input = st.text_input("Ask something...")
+
+if user_input:
+    response = ""
+
+    # 🔥 Simple logic (AI-like)
+    if "pending" in user_input.lower():
+        rows = exec_query(
+            "SELECT COUNT(*) FROM purchase_orders WHERE status != 'Completed'",
+            fetch=True
+        )
+        count = list(rows[0].values())[0]
+        response = f"There are {count} pending orders."
+
+    elif "completed" in user_input.lower():
+        rows = exec_query(
+            "SELECT COUNT(*) FROM purchase_orders WHERE status = 'Completed'",
+            fetch=True
+        )
+        count = list(rows[0].values())[0]
+        response = f"{count} orders are completed."
+
+    elif "products" in user_input.lower():
+        rows = exec_query("SELECT COUNT(*) FROM products", fetch=True)
+        count = list(rows[0].values())[0]
+        response = f"You have {count} products."
+
+    else:
+        response = "I can help with orders, products, or status."
+
+    st.session_state.chat_history.append(("You", user_input))
+    st.session_state.chat_history.append(("Bot", response))
+
+
+# Show chat
+for sender, msg in st.session_state.chat_history:
+    st.write(f"**{sender}:** {msg}")
