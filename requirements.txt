@@ -5,3 +5,4 @@ oauth2client
 psycopg2-binary
 google-generativeai
 python-dotenv
+supabase
