@@ -1,6 +1,7 @@
 streamlit
 pandas
-supabase
-python-dotenv
 gspread
-google-auth
+oauth2client
+psycopg2-binary
+google-generativeai
+python-dotenv
