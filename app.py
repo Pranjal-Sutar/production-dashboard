@@ -1,17 +1,35 @@
-#last edited 6/4/26
-
+#last edited 11/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
-
+from db import get_connection
 from supabase_client import supabase
 from sheets import get_steps_raw
-
+from dotenv import load_dotenv
+load_dotenv()
+import time
 # ================= CONFIG =================
 st.set_page_config(layout="wide")
 
-
+st.markdown("""
+<style>
+.overdue-row {
+    background-color: #ffe5e5;
+    padding: 4px 6px;
+    border-radius: 6px;
+    color: #b91c1c;
+    font-weight: 500;
+}
+</style>
+""", unsafe_allow_html=True)
+import google.generativeai as genai
+import os
+if "show_chat" not in st.session_state:
+    st.session_state.show_chat = False
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-flash-latest")
 ORDER_STATUSES = ["Not Started", "In Progress", "Completed", "Cancelled"]
+
 
 # ================= SESSION =================
 st.session_state.setdefault("mode", "Operations")
@@ -24,7 +42,9 @@ st.session_state.setdefault("last_added_product", None)      # force sidebar to 
 st.session_state.setdefault("confirm_delete_po_id", None)    # PO pending deletion
 st.session_state.setdefault("confirm_delete_po_number", None)
 st.session_state.setdefault("deleted_po_snapshot", None)     # holds deleted PO + steps for undo
-
+st.session_state.setdefault("last_api_call", 0)
+st.session_state.setdefault("last_query", "")
+st.session_state.setdefault("is_processing", False)
 # ================= HELPERS =================
 def fetch_products(active_only=True):
     query = supabase.table("products").select("*")
@@ -76,8 +96,223 @@ def is_overdue(row, threshold=25):
         and days_since(row["po_date"]) >= threshold
     )
 
+def build_context_all(query=None):
+    products = fetch_products()
+    context = ""
+    all_orders = pd.DataFrame()
 
-# ================= SIDEBAR =================
+    q = query.lower() if query else ""
+
+    # ================= STEP 1: COLLECT ALL ORDERS =================
+    for _, p in products.iterrows():
+        orders = fetch_orders(p["id"])
+
+        if orders.empty:
+            continue
+
+        orders["product_name"] = p["product_name"]
+        all_orders = pd.concat([all_orders, orders], ignore_index=True)
+
+    # ================= STEP 2: APPLY FILTERS =================
+    orders = all_orders
+
+    if orders.empty:
+        return "No relevant data found"
+
+    # -------- STATUS FILTER --------
+    if any(word in q for word in ["pending", "not started", "not done"]):
+        orders = orders[orders["status"] == "Not Started"]
+
+    elif any(word in q for word in ["completed", "done", "finished"]):
+        orders = orders[orders["status"] == "Completed"]
+
+    elif "cancelled" in q:
+        orders = orders[orders["status"] == "Cancelled"]
+
+    elif "in progress" in q:
+        orders = orders[orders["status"] == "In Progress"]
+
+    # -------- CUSTOMER FILTER --------
+    for _, row in orders.iterrows():
+        if row["customer"] and row["customer"].lower() in q:
+            orders = orders[orders["customer"].str.lower() == row["customer"].lower()]
+            break
+
+    # -------- DATE FILTER --------
+    if any(word in q for word in ["recent", "latest", "last"]):
+        orders = orders.sort_values(by="po_date", ascending=False).head(1)
+
+    if "first" in q or "oldest" in q:
+        orders = orders.sort_values(by="po_date", ascending=True).head(1)
+
+    # -------- MONTH FILTER --------
+    months = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12
+    }
+
+    for month_name, month_num in months.items():
+        if month_name in q:
+            orders["po_date"] = pd.to_datetime(orders["po_date"], errors="coerce")
+            orders = orders[orders["po_date"].dt.month == month_num]
+            break
+
+    if orders.empty:
+        return "No relevant data found"
+
+    # ================= STEP 3: BUILD CONTEXT =================
+    for _, row in orders.iterrows():
+        context += f"""
+Product: {row['product_name']}
+PO: {row['po_number']}
+Customer: {row['customer']}
+Status: {row['status']}
+Date: {row['po_date']}
+---
+"""
+
+    return context
+
+
+def is_simple_query(query):
+    q = query.lower()
+
+    keywords = [
+    "pending", "not started", "completed",
+    "cancelled", "in progress",
+    "customer", "old", "recent",
+    "last", "latest", "first",
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december"
+]   
+    return any(word in q for word in keywords)
+
+def format_orders(context, query):
+    lines = context.split("---")
+    result = []
+
+    for item in lines:
+        if "PO:" in item:
+            po = ""
+            customer = ""
+            status = ""
+            date = ""
+            product = ""
+
+            for line in item.split("\n"):
+                if "Product:" in line:
+                    product = line.split("Product:")[1].strip()
+
+                if "PO:" in line:
+                    po = line.split("PO:")[1].strip()
+
+                if "Customer:" in line:
+                    customer = line.split("Customer:")[1].strip()
+
+                if "Status:" in line:
+                    status = line.split("Status:")[1].strip()
+
+                if "Date:" in line:
+                    raw_date = line.split("Date:")[1].strip()
+                    try:
+                        date = pd.to_datetime(raw_date).strftime("%d %b %Y")
+                    except:
+                        date = raw_date
+
+            # 🎨 status colors
+            if status == "Completed":
+                color = "#16a34a"
+            elif status == "Not Started":
+                color = "#dc2626"
+            elif status == "In Progress":
+                color = "#f59e0b"
+            else:
+                color = "#555"
+
+            result.append(
+                f"""<div style="padding:8px 10px;border-radius:10px;margin:6px 0;background:#f1f5f9;">
+📌 <b>{po}</b><br>
+<span style='color:#2563eb; font-weight:600'>{product}</span><br>
+<span style='color:#555'>{customer}</span><br>
+<span style='color:{color}; font-weight:600'>{status}</span><br>
+<span style='color:#888'>📅 {date}</span>
+</div>"""
+            )
+
+    if not result:
+        return "Not available in system data"
+
+    q = query.lower()
+
+    if "pending" in q or "not started" in q:
+        title = "📦 <b>Pending Orders</b>"
+    elif "completed" in q:
+        title = "✅ <b>Completed Orders</b>"
+    elif "progress" in q:
+        title = "🚧 <b>In Progress Orders</b>"
+    elif any(word in q for word in ["latest", "last"]):
+        title = "🆕 <b>Latest Order</b>"
+    elif any(m in q for m in [
+        "january","february","march","april","may","june",
+        "july","august","september","october","november","december"
+    ]):
+        title = "📅 <b>Orders by Month</b>"
+    else:
+        title = "📋 <b>Orders</b>"
+
+    return f"{title}<br>{''.join(result)}"
+
+def chat_with_data(user_query, product_id=None):
+    try:
+        import time
+
+        q = user_query.strip().lower()
+
+        context = build_context_all(user_query)
+
+        # ✅ 1. HANDLE SIMPLE QUERIES FIRST (NO API)
+        if is_simple_query(user_query):
+            return format_orders(context, user_query)
+
+        # ✅ 2. Prevent duplicate (but allow meaningful queries)
+        if q == st.session_state.last_query and len(q) < 10:
+            return "⚠️ Try a more specific question."
+
+        # ✅ 3. Cooldown only for API
+        if time.time() - st.session_state.last_api_call < 10:
+            return "⏳ Please wait a few seconds..."
+
+        st.session_state.last_api_call = time.time()
+
+        prompt = f"""You are a helpful business assistant.
+
+ONLY use the given DATA. Do not assume anything.
+Give clean, structured answers using bullet points.
+
+DATA:
+{context}
+
+QUESTION:
+{user_query}
+"""
+
+        response = model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.2}
+        )
+
+        response_text = response.text.strip()
+
+        # ✅ 4. Update AFTER response (important fix)
+        st.session_state.last_query = q
+
+        return response_text
+
+    except Exception as e:
+        return f"⚠️Something went wrong. Please try again"    
+        
+    # ================= SIDEBAR =================
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
 
@@ -87,6 +322,7 @@ if st.session_state.mode == "Admin":
 
     # ---------- PRODUCTS ----------
     products = fetch_products(active_only=False)
+
 
     for _, row in products.iterrows():
         pid = int(row["id"])
@@ -146,9 +382,7 @@ Share the Google Sheet with this **service account email** as **Editor**:
 
 📧 **SERVICE ACCOUNT EMAIL**  
 `streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com`
-
 *(This is a system account, not a personal Gmail)*
-
 **3️⃣ Link Sheet to Product**
 - Enter the **exact Google Sheet name**
 - Click **Save**
@@ -196,7 +430,52 @@ if st.session_state.mode == "Operations":
         st.session_state.selected_product = product_names[0]
 
     st.sidebar.selectbox("Select Product", product_names, key="selected_product")
+    st.sidebar.markdown("### 🤖 Assistant")
 
+    if st.sidebar.button("Open Chat"):
+            st.session_state.show_chat = not st.session_state.show_chat
+    if st.session_state.show_chat:
+
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = [("Bot", "Hi 👋 Ask me about your orders!")]
+
+        # Show messages in sidebar
+        for role, msg in st.session_state.chat_history:
+            if role == "You":
+                st.sidebar.markdown(
+                    f"<div style='background:#dcf8c6;padding:6px;border-radius:8px;margin:4px;text-align:right'>{msg}</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.sidebar.markdown(
+                    msg,
+                    unsafe_allow_html=True
+                )
+
+        # Input in sidebar
+        with st.sidebar.form("chat_form", clear_on_submit=True):
+            user_input = st.text_input("Type message...")
+            submitted = st.form_submit_button("Send")
+
+        if submitted and user_input:
+
+    # 🔒 prevent double trigger
+            if st.session_state.is_processing:
+                st.stop()
+
+            st.session_state.is_processing = True
+            st.session_state.last_query = user_input
+
+            with st.sidebar:
+                with st.spinner("🤖 typing..."):
+                    reply = chat_with_data(user_input)
+
+            st.session_state.chat_history.append(("You", user_input))
+            st.session_state.chat_history.append(("Bot", reply))
+
+            st.session_state.is_processing = False
+
+            st.rerun()        
     selected   = st.session_state.selected_product
     product_df = products[products["product_name"] == selected]
 
@@ -212,6 +491,8 @@ if st.session_state.mode == "Operations":
     product    = product_df.iloc[0]
     product_id = int(product["id"])
     sheet_name = product["sheet_name"]
+
+    
 
     # ── If the user switched product while in steps view, return to orders ──
     if st.session_state.view_mode == "steps" and st.session_state.active_po_id is not None:
@@ -235,299 +516,291 @@ if st.session_state.mode == "Operations":
         st.divider()
 
     # ================= ORDERS =================
-    if st.session_state.view_mode == "orders":
+    main_col = st.container()
 
-        st.subheader(f"📄 Orders – {product['product_name']}")
-        orders = fetch_orders(product_id)
+    
+    with main_col:
+        if st.session_state.view_mode == "orders":
 
-        if not orders.empty:
+            st.subheader(f"📄 Orders – {product['product_name']}")
+            orders = fetch_orders(product_id)
+            
+            if not orders.empty:
 
-            # ── Inject CSS once: .row-highlight wraps each overdue row ──
-            st.markdown("""
-                <style>
-                div[data-testid="stHorizontalBlock"]:has(div.overdue-row) {
-                    background-color: #ffe5e5;
-                    border-radius: 6px;
-                    padding: 2px 0px;
-                }
-                div[data-testid="stHorizontalBlock"]:has(div.overdue-row) p,
-                div[data-testid="stHorizontalBlock"]:has(div.overdue-row) div.overdue-row {
-                    color: #7a0000 !important;
-                    font-weight: 500;
-                }
-                </style>
-            """, unsafe_allow_html=True)
+                # ── Inject CSS once: .row-highlight wraps each overdue row ──
+                
 
-            # ── Overdue alert banner ──
-            overdue_orders = orders[orders.apply(is_overdue, axis=1)]
-            if not overdue_orders.empty:
-                po_list = ", ".join(f"**{r}**" for r in overdue_orders["po_number"].tolist())
-                count   = len(overdue_orders)
-                st.warning(
-                    f"⚠️ {count} order(s) have **not been started** even after 25 days: {po_list}. "
-                    "Please take action immediately.",
-                    icon="🚨"
-                )
-
-            # ── Column headers ──
-            h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
-            h1.markdown("**PO Number**")
-            h2.markdown("**Customer**")
-            h3.markdown("**Date**")
-            h4.markdown("**Status**")
-            h5.markdown("**Del**")
-
-            # ── One row per PO ──
-            for _, row in orders.iterrows():
-                po_id_row = int(row["id"])
-                age       = days_since(row["po_date"])
-                overdue   = row["status"] == "Not Started" and age >= 25
-
-                c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
-
-                # Inject an invisible tagged div into c1 so CSS can target the parent row
-                if overdue:
-                    c1.markdown(
-                        f'<div class="overdue-row">{row["po_number"]}</div>',
-                        unsafe_allow_html=True
+                # ── Overdue alert banner ──
+                overdue_orders = orders[orders.apply(is_overdue, axis=1)]
+                if not overdue_orders.empty:
+                    po_list = ", ".join(f"**{r}**" for r in overdue_orders["po_number"].tolist())
+                    count   = len(overdue_orders)
+                    st.warning(
+                        f"⚠️ {count} order(s) have **not been started** even after 25 days: {po_list}. "
+                        "Please take action immediately.",
+                        icon="🚨"
                     )
+
+                # ── Column headers ──
+                h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
+                h1.markdown("**PO Number**")
+                h2.markdown("**Customer**")
+                h3.markdown("**Date**")
+                h4.markdown("**Status**")
+                h5.markdown("**Del**")
+
+                # ── One row per PO ──
+                for _, row in orders.iterrows():
+                    po_id_row = int(row["id"])
+                    age       = days_since(row["po_date"])
+                    overdue   = row["status"] == "Not Started" and age >= 25
+
+                    c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
+
+                    # Inject an invisible tagged div into c1 so CSS can target the parent row
+                    if overdue:
+                        c1.markdown(
+                            f'<div class="overdue-row">{row["po_number"]}</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        c1.write(row["po_number"])
+
+                    c2.write(row["customer"] or "—")
+                    c3.write(pd.to_datetime(row["po_date"]).strftime("%d/%m/%y"))
+
+                    new_status = c4.selectbox(
+                        "status",
+                        ORDER_STATUSES,
+                        index=ORDER_STATUSES.index(row["status"]) if row["status"] in ORDER_STATUSES else 0,
+                        key=f"status_{po_id_row}",
+                        label_visibility="collapsed"
+                    )
+                    if new_status != row["status"]:
+                        supabase.table("purchase_orders") \
+                            .update({"status": new_status}) \
+                            .eq("id", po_id_row) \
+                            .execute()
+
+                    # ── Delete button ──
+                    if c5.button("🗑", key=f"del_po_{po_id_row}", help="Delete this PO"):
+                        st.session_state.confirm_delete_po_id     = po_id_row
+                        st.session_state.confirm_delete_po_number = row["po_number"]
+
+                # ── PO deletion confirmation banner ──
+                if st.session_state.confirm_delete_po_id is not None:
+                    po_label = st.session_state.confirm_delete_po_number
+                    st.warning(
+                        f"⚠️ Delete PO **{po_label}**? "
+                        "This will also remove all its steps. You can undo immediately after."
+                    )
+                    yes_col, no_col, _ = st.columns([1, 1, 6])
+                    if yes_col.button("✅ Yes, delete", key="confirm_po_yes"):
+                        del_id = st.session_state.confirm_delete_po_id
+                        po_row = supabase.table("purchase_orders") \
+                            .select("*") \
+                            .eq("id", del_id) \
+                            .execute().data
+
+                        steps_rows = supabase.table("po_steps") \
+                            .select("*") \
+                            .eq("po_id", del_id) \
+                            .order("step_index") \
+                            .execute().data
+                        
+                        st.session_state.deleted_po_snapshot = {
+                            "po":    po_row[0] if po_row else None,
+                            "steps": steps_rows
+                        }
+                        supabase.table("po_steps") \
+                            .delete() \
+                            .eq("po_id", del_id) \
+                            .execute()
+
+                        supabase.table("purchase_orders") \
+                            .delete() \
+                            .eq("id", del_id) \
+                            .execute()
+                        st.session_state.confirm_delete_po_id     = None
+                        st.session_state.confirm_delete_po_number = None
+                        st.toast(f"PO '{po_label}' deleted. Click Undo to restore.", icon="🗑️")
+                        st.rerun()
+                    if no_col.button("❌ Cancel", key="confirm_po_no"):
+                        st.session_state.confirm_delete_po_id     = None
+                        st.session_state.confirm_delete_po_number = None
+                        st.rerun()
+
+                # ── Undo banner ──
+                if st.session_state.deleted_po_snapshot is not None:
+                    snap    = st.session_state.deleted_po_snapshot
+                    po_data = snap["po"]
+                    if po_data:
+                        undo_label = po_data["po_number"]
+                        st.info(f"🗑️ PO **{undo_label}** was deleted.")
+                        undo_col, dismiss_col, _ = st.columns([1, 1, 6])
+                        if undo_col.button("↩️ Undo", key="undo_po"):
+                            supabase.table("purchase_orders").insert({
+                            "po_number": po_data["po_number"],
+                            "product_id": po_data["product_id"],
+                            "customer": po_data["customer"],
+                            "po_date": po_data["po_date"],
+                            "status": po_data["status"]
+                        }).execute()
+                            new_po_id_row = supabase.table("purchase_orders") \
+                            .select("id") \
+                            .eq("po_number", po_data["po_number"]) \
+                            .eq("product_id", po_data["product_id"]) \
+                            .order("id", desc=True) \
+                            .limit(1) \
+                            .execute().data
+                            if new_po_id_row:
+                                new_po_id = new_po_id_row[0]["id"]
+                                for s in snap["steps"]:
+                                    supabase.table("po_steps").insert({
+                                        "po_id": int(new_po_id),
+                                        "step_index": s["step_index"],
+                                        "step_description": s["step_description"],
+                                        "status": s["status"],
+                                        "remark": s["remark"],
+                                        "updated_on": s["updated_on"]
+                                    }).execute()
+                            st.session_state.deleted_po_snapshot = None
+                            st.toast(f"PO '{undo_label}' restored!", icon="↩️")
+                            st.rerun()
+                        if dismiss_col.button("✖ Dismiss", key="dismiss_undo"):
+                            st.session_state.deleted_po_snapshot = None
+                            st.rerun()
+
+            st.divider()
+
+            active_orders = orders[orders["status"] != "Cancelled"] if not orders.empty else orders
+            if not active_orders.empty:
+                po_map      = {row["po_number"]: int(row["id"]) for _, row in active_orders.iterrows()}
+                selected_po = st.selectbox("Select PO to Track", list(po_map.keys()))
+
+                if st.button("Track Selected PO"):
+                    st.session_state.active_po_id     = po_map[selected_po]
+                    st.session_state.active_po_number = selected_po
+                    st.session_state.view_mode        = "steps"
+                    st.rerun()
+
+            st.divider()
+
+            with st.form("add_order"):
+                po      = st.text_input("PO Number")
+                cust    = st.text_input("Customer")
+                po_date = st.date_input("PO Date", value=date.today())
+                status  = st.selectbox("Status", ORDER_STATUSES)
+                submit  = st.form_submit_button("Add Order")
+
+            if submit and po.strip():
+                existing = supabase.table("purchase_orders") \
+                    .select("id") \
+                    .eq("po_number", po.strip()) \
+                    .eq("product_id", product_id) \
+                    .execute().data
+                if existing:
+                    st.error(f"PO number **{po.strip()}** already exists for this product.")
                 else:
-                    c1.write(row["po_number"])
-
-                c2.write(row["customer"] or "—")
-                c3.write(pd.to_datetime(row["po_date"]).strftime("%d/%m/%y"))
-
-                new_status = c4.selectbox(
-                    "status",
-                    ORDER_STATUSES,
-                    index=ORDER_STATUSES.index(row["status"]) if row["status"] in ORDER_STATUSES else 0,
-                    key=f"status_{po_id_row}",
-                    label_visibility="collapsed"
-                )
-                if new_status != row["status"]:
-                    supabase.table("purchase_orders") \
-                        .update({"status": new_status}) \
-                        .eq("id", po_id_row) \
-                        .execute()
-
-                # ── Delete button ──
-                if c5.button("🗑", key=f"del_po_{po_id_row}", help="Delete this PO"):
-                    st.session_state.confirm_delete_po_id     = po_id_row
-                    st.session_state.confirm_delete_po_number = row["po_number"]
-
-            # ── PO deletion confirmation banner ──
-            if st.session_state.confirm_delete_po_id is not None:
-                po_label = st.session_state.confirm_delete_po_number
-                st.warning(
-                    f"⚠️ Delete PO **{po_label}**? "
-                    "This will also remove all its steps. You can undo immediately after."
-                )
-                yes_col, no_col, _ = st.columns([1, 1, 6])
-                if yes_col.button("✅ Yes, delete", key="confirm_po_yes"):
-                    del_id = st.session_state.confirm_delete_po_id
-                    po_row = supabase.table("purchase_orders") \
-                        .select("*") \
-                        .eq("id", del_id) \
-                        .execute().data
-
-                    steps_rows = supabase.table("po_steps") \
-                        .select("*") \
-                        .eq("po_id", del_id) \
-                        .order("step_index") \
-                        .execute().data
-                    
-                    st.session_state.deleted_po_snapshot = {
-                        "po":    po_row[0] if po_row else None,
-                        "steps": steps_rows
-                    }
-                    supabase.table("po_steps") \
-                        .delete() \
-                        .eq("po_id", del_id) \
-                        .execute()
-
-                    supabase.table("purchase_orders") \
-                        .delete() \
-                        .eq("id", del_id) \
-                        .execute()
-                    st.session_state.confirm_delete_po_id     = None
-                    st.session_state.confirm_delete_po_number = None
-                    st.toast(f"PO '{po_label}' deleted. Click Undo to restore.", icon="🗑️")
-                    st.rerun()
-                if no_col.button("❌ Cancel", key="confirm_po_no"):
-                    st.session_state.confirm_delete_po_id     = None
-                    st.session_state.confirm_delete_po_number = None
-                    st.rerun()
-
-            # ── Undo banner ──
-            if st.session_state.deleted_po_snapshot is not None:
-                snap    = st.session_state.deleted_po_snapshot
-                po_data = snap["po"]
-                if po_data:
-                    undo_label = po_data["po_number"]
-                    st.info(f"🗑️ PO **{undo_label}** was deleted.")
-                    undo_col, dismiss_col, _ = st.columns([1, 1, 6])
-                    if undo_col.button("↩️ Undo", key="undo_po"):
-                        supabase.table("purchase_orders").insert({
-                        "po_number": po_data["po_number"],
-                        "product_id": po_data["product_id"],
-                        "customer": po_data["customer"],
-                        "po_date": po_data["po_date"],
-                        "status": po_data["status"]
+                    supabase.table("purchase_orders").insert({
+                        "po_number": po.strip(),
+                        "product_id": int(product_id),
+                        "customer": cust.strip(),
+                        "po_date": po_date.isoformat(),
+                        "status": status
                     }).execute()
-                        new_po_id_row = supabase.table("purchase_orders") \
-                        .select("id") \
-                        .eq("po_number", po_data["po_number"]) \
-                        .eq("product_id", po_data["product_id"]) \
-                        .order("id", desc=True) \
-                        .limit(1) \
-                        .execute().data
-                        if new_po_id_row:
-                            new_po_id = new_po_id_row[0]["id"]
-                            for s in snap["steps"]:
-                                supabase.table("po_steps").insert({
-                                    "po_id": int(new_po_id),
-                                    "step_index": s["step_index"],
-                                    "step_description": s["step_description"],
-                                    "status": s["status"],
-                                    "remark": s["remark"],
-                                    "updated_on": s["updated_on"]
-                                }).execute()
-                        st.session_state.deleted_po_snapshot = None
-                        st.toast(f"PO '{undo_label}' restored!", icon="↩️")
-                        st.rerun()
-                    if dismiss_col.button("✖ Dismiss", key="dismiss_undo"):
-                        st.session_state.deleted_po_snapshot = None
-                        st.rerun()
+                    st.toast(f"PO '{po.strip()}' added successfully!", icon="✅")
+                    st.rerun()
 
-        st.divider()
+            if st.session_state.view_mode == "steps":
 
-        active_orders = orders[orders["status"] != "Cancelled"] if not orders.empty else orders
-        if not active_orders.empty:
-            po_map      = {row["po_number"]: int(row["id"]) for _, row in active_orders.iterrows()}
-            selected_po = st.selectbox("Select PO to Track", list(po_map.keys()))
+                po_id = int(st.session_state.active_po_id)
+                st.subheader("🛠 Steps")
 
-            if st.button("Track Selected PO"):
-                st.session_state.active_po_id     = po_map[selected_po]
-                st.session_state.active_po_number = selected_po
-                st.session_state.view_mode        = "steps"
-                st.rerun()
+                steps = fetch_po_steps(po_id)
 
-        st.divider()
+                if steps.empty:
+                    raw = get_steps_raw(sheet_name)
+                    for i, step in enumerate(raw, start=1):
+                        supabase.table("po_steps").insert({
+                            "po_id": int(po_id),
+                            "step_index": int(i),
+                            "step_description": step["description"],
+                            "status": "Not Started"
+                        }).execute()
+                    steps = fetch_po_steps(po_id)
 
-        with st.form("add_order"):
-            po      = st.text_input("PO Number")
-            cust    = st.text_input("Customer")
-            po_date = st.date_input("PO Date", value=date.today())
-            status  = st.selectbox("Status", ORDER_STATUSES)
-            submit  = st.form_submit_button("Add Order")
+                display = pd.DataFrame({
+                    "Done": steps["status"] == "Done",
+                    "Date": steps.apply(
+                        lambda r: datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
+                                if r["updated_on"] else "",
+                        axis=1
+                    ),
+                    "Description": steps["step_description"],
+                    "Remark":      steps["remark"].fillna("")
+                })
 
-        if submit and po.strip():
-            existing = supabase.table("purchase_orders") \
-                .select("id") \
-                .eq("po_number", po.strip()) \
-                .eq("product_id", product_id) \
-                .execute().data
-            if existing:
-                st.error(f"PO number **{po.strip()}** already exists for this product.")
-            else:
-                supabase.table("purchase_orders").insert({
-                    "po_number": po.strip(),
-                    "product_id": int(product_id),
-                    "customer": cust.strip(),
-                    "po_date": po_date.isoformat(),
-                    "status": status
-                }).execute()
-                st.toast(f"PO '{po.strip()}' added successfully!", icon="✅")
-                st.rerun()
+                edited = st.data_editor(
+                    display,
+                    num_rows="fixed",
+                    column_config={
+                        "Date": st.column_config.TextColumn(disabled=True),
+                    }
+                )
 
-    # ================= STEPS =================
-    if st.session_state.view_mode == "steps":
+                needs_rerun = False
 
-        po_id = int(st.session_state.active_po_id)
-        st.subheader("🛠 Steps")
+                for i, row in steps.iterrows():
+                    ed       = edited.iloc[i]
+                    new_done = ed["Done"]
+                    was_done = row["status"] == "Done"
 
-        steps = fetch_po_steps(po_id)
+                    if new_done:
+                        new_status = "Done"
+                        new_date   = row["updated_on"] if was_done and row["updated_on"] else date.today().isoformat()
+                    else:
+                        new_status = "Not Started"
+                        new_date   = None
 
-        if steps.empty:
-            raw = get_steps_raw(sheet_name)
-            for i, step in enumerate(raw, start=1):
-                supabase.table("po_steps").insert({
-                    "po_id": int(po_id),
-                    "step_index": int(i),
-                    "step_description": step["description"],
-                    "status": "Not Started"
-                }).execute()
-            steps = fetch_po_steps(po_id)
+                    if (
+                        new_status != row["status"]
+                        or ed["Description"] != row["step_description"]
+                        or ed["Remark"] != (row["remark"] or "")
+                        or new_date != row["updated_on"]
+                    ):
+                        supabase.table("po_steps") \
+                            .update({
+                                "step_description": ed["Description"],
+                                "status": new_status,
+                                "remark": ed["Remark"],
+                                "updated_on": new_date
+                            }) \
+                            .eq("id", int(row["id"])) \
+                            .execute()
+                        if new_done != was_done:
+                            needs_rerun = True
 
-        display = pd.DataFrame({
-            "Done": steps["status"] == "Done",
-            "Date": steps.apply(
-                lambda r: datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
-                          if r["updated_on"] else "",
-                axis=1
-            ),
-            "Description": steps["step_description"],
-            "Remark":      steps["remark"].fillna("")
-        })
+                if needs_rerun:
+                    st.rerun()
 
-        edited = st.data_editor(
-            display,
-            num_rows="fixed",
-            column_config={
-                "Date": st.column_config.TextColumn(disabled=True),
-            }
-        )
+                # ── Add a custom step row ──
+                st.divider()
+                with st.form("add_step"):
+                    new_desc = st.text_input("Step Description", placeholder="Enter new step...")
+                    new_rmk  = st.text_input("Remark (optional)")
+                    add_step = st.form_submit_button("➕ Add Step")
 
-        needs_rerun = False
+                if add_step and new_desc.strip():
+                    next_idx = int(steps["step_index"].max()) + 1 if not steps.empty else 1
+                    supabase.table("po_steps").insert({
+                        "po_id": int(po_id),
+                        "step_index": int(next_idx),
+                        "step_description": new_desc.strip(),
+                        "status": "Not Started",
+                        "remark": new_rmk.strip() or None
+                    }).execute()
+                    st.toast("Step added.", icon="✅")
+                    st.rerun()
 
-        for i, row in steps.iterrows():
-            ed       = edited.iloc[i]
-            new_done = ed["Done"]
-            was_done = row["status"] == "Done"
 
-            if new_done:
-                new_status = "Done"
-                new_date   = row["updated_on"] if was_done and row["updated_on"] else date.today().isoformat()
-            else:
-                new_status = "Not Started"
-                new_date   = None
-
-            if (
-                new_status != row["status"]
-                or ed["Description"] != row["step_description"]
-                or ed["Remark"] != (row["remark"] or "")
-                or new_date != row["updated_on"]
-            ):
-                supabase.table("po_steps") \
-                    .update({
-                        "step_description": ed["Description"],
-                        "status": new_status,
-                        "remark": ed["Remark"],
-                        "updated_on": new_date
-                    }) \
-                    .eq("id", int(row["id"])) \
-                    .execute()
-                if new_done != was_done:
-                    needs_rerun = True
-
-        if needs_rerun:
-            st.rerun()
-
-        # ── Add a custom step row ──
-        st.divider()
-        with st.form("add_step"):
-            new_desc = st.text_input("Step Description", placeholder="Enter new step...")
-            new_rmk  = st.text_input("Remark (optional)")
-            add_step = st.form_submit_button("➕ Add Step")
-
-        if add_step and new_desc.strip():
-            next_idx = int(steps["step_index"].max()) + 1 if not steps.empty else 1
-            supabase.table("po_steps").insert({
-                "po_id": int(po_id),
-                "step_index": int(next_idx),
-                "step_description": new_desc.strip(),
-                "status": "Not Started",
-                "remark": new_rmk.strip() or None
-            }).execute()
-            st.toast("Step added.", icon="✅")
-            st.rerun()
