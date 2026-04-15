@@ -1,4 +1,4 @@
-#last edited 11/4/26
+#last edited 14/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -381,9 +381,10 @@ if st.session_state.mode == "Admin":
 Share the Google Sheet with this **service account email** as **Editor**:
 
 📧 **SERVICE ACCOUNT EMAIL**  
-`streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com`
-*(This is a system account, not a personal Gmail)*
 
+
+*(This is a system account, not a personal Gmail)*
+t
 **3️⃣ Link Sheet to Product**
 - Enter the **exact Google Sheet name**
 - Click **Save**
@@ -713,95 +714,94 @@ if st.session_state.mode == "Operations":
                     st.toast(f"PO '{po.strip()}' added successfully!", icon="✅")
                     st.rerun()
 
-            if st.session_state.view_mode == "steps":
+    if st.session_state.view_mode == "steps":
 
-                po_id = int(st.session_state.active_po_id)
-                st.subheader("🛠 Steps")
+        po_id = int(st.session_state.active_po_id)
+        st.subheader("🛠 Steps")
 
-                steps = fetch_po_steps(po_id)
+        steps = fetch_po_steps(po_id)
 
-                if steps.empty:
-                    raw = get_steps_raw(sheet_name)
-                    for i, step in enumerate(raw, start=1):
-                        supabase.table("po_steps").insert({
-                            "po_id": int(po_id),
-                            "step_index": int(i),
-                            "step_description": step["description"],
-                            "status": "Not Started"
-                        }).execute()
-                    steps = fetch_po_steps(po_id)
+        if steps.empty:
+            raw = get_steps_raw(sheet_name)
+            for i, step in enumerate(raw, start=1):
+                supabase.table("po_steps").insert({
+                    "po_id": int(po_id),
+                    "step_index": int(i),
+                    "step_description": step["description"],
+                    "status": "Not Started"
+                }).execute()
+            steps = fetch_po_steps(po_id)
 
-                display = pd.DataFrame({
-                    "Done": steps["status"] == "Done",
-                    "Date": steps.apply(
-                        lambda r: datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
-                                if r["updated_on"] else "",
-                        axis=1
-                    ),
-                    "Description": steps["step_description"],
-                    "Remark":      steps["remark"].fillna("")
-                })
+        display = pd.DataFrame({
+            "Done": steps["status"] == "Done",
+            "Date": steps.apply(
+                lambda r: datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
+                        if r["updated_on"] else "",
+                axis=1
+            ),
+            "Description": steps["step_description"],
+            "Remark":      steps["remark"].fillna("")
+        })
 
-                edited = st.data_editor(
-                    display,
-                    num_rows="fixed",
-                    column_config={
-                        "Date": st.column_config.TextColumn(disabled=True),
-                    }
-                )
+        edited = st.data_editor(
+            display,
+            num_rows="fixed",
+            column_config={
+                "Date": st.column_config.TextColumn(disabled=True),
+            }
+        )
 
-                needs_rerun = False
+        needs_rerun = False
 
-                for i, row in steps.iterrows():
-                    ed       = edited.iloc[i]
-                    new_done = ed["Done"]
-                    was_done = row["status"] == "Done"
+        for i, row in steps.iterrows():
+            ed       = edited.iloc[i]
+            new_done = ed["Done"]
+            was_done = row["status"] == "Done"
 
-                    if new_done:
-                        new_status = "Done"
-                        new_date   = row["updated_on"] if was_done and row["updated_on"] else date.today().isoformat()
-                    else:
-                        new_status = "Not Started"
-                        new_date   = None
+            if new_done:
+                new_status = "Done"
+                new_date   = row["updated_on"] if was_done and row["updated_on"] else date.today().isoformat()
+            else:
+                new_status = "Not Started"
+                new_date   = None
 
-                    if (
-                        new_status != row["status"]
-                        or ed["Description"] != row["step_description"]
-                        or ed["Remark"] != (row["remark"] or "")
-                        or new_date != row["updated_on"]
-                    ):
-                        supabase.table("po_steps") \
-                            .update({
-                                "step_description": ed["Description"],
-                                "status": new_status,
-                                "remark": ed["Remark"],
-                                "updated_on": new_date
-                            }) \
-                            .eq("id", int(row["id"])) \
-                            .execute()
-                        if new_done != was_done:
-                            needs_rerun = True
+            if (
+                new_status != row["status"]
+                or ed["Description"] != row["step_description"]
+                or ed["Remark"] != (row["remark"] or "")
+                or new_date != row["updated_on"]
+            ):
+                supabase.table("po_steps") \
+                    .update({
+                        "step_description": ed["Description"],
+                        "status": new_status,
+                        "remark": ed["Remark"],
+                        "updated_on": new_date
+                    }) \
+                    .eq("id", int(row["id"])) \
+                    .execute()
+                if new_done != was_done:
+                    needs_rerun = True
 
-                if needs_rerun:
-                    st.rerun()
+        if needs_rerun:
+            st.rerun()
 
-                # ── Add a custom step row ──
-                st.divider()
-                with st.form("add_step"):
-                    new_desc = st.text_input("Step Description", placeholder="Enter new step...")
-                    new_rmk  = st.text_input("Remark (optional)")
-                    add_step = st.form_submit_button("➕ Add Step")
+        # ── Add a custom step row ──
+        st.divider()
+        with st.form("add_step"):
+            new_desc = st.text_input("Step Description", placeholder="Enter new step...")
+            new_rmk  = st.text_input("Remark (optional)")
+            add_step = st.form_submit_button("➕ Add Step")
 
-                if add_step and new_desc.strip():
-                    next_idx = int(steps["step_index"].max()) + 1 if not steps.empty else 1
-                    supabase.table("po_steps").insert({
-                        "po_id": int(po_id),
-                        "step_index": int(next_idx),
-                        "step_description": new_desc.strip(),
-                        "status": "Not Started",
-                        "remark": new_rmk.strip() or None
-                    }).execute()
-                    st.toast("Step added.", icon="✅")
-                    st.rerun()
-
+        if add_step and new_desc.strip():
+            next_idx = int(steps["step_index"].max()) + 1 if not steps.empty else 1
+            supabase.table("po_steps").insert({
+                "po_id": int(po_id),
+                "step_index": int(next_idx),
+                "step_description": new_desc.strip(),
+                "status": "Not Started",
+                "remark": new_rmk.strip() or None
+            }).execute()
+            st.toast("Step added.", icon="✅")
+            st.rerun()
 
