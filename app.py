@@ -735,8 +735,10 @@ if st.session_state.mode == "Operations":
         display = pd.DataFrame({
             "Done": steps["status"] == "Done",
             "Date": steps.apply(
-                lambda r: datetime.fromisoformat(r["updated_on"]).strftime("%d/%m/%y")
-                        if r["updated_on"] else "",
+                lambda r: (
+                    pd.to_datetime(r["updated_on"], errors="coerce").strftime("%d/%m/%y")
+                    if pd.notna(r["updated_on"]) else ""
+                ),
                 axis=1
             ),
             "Description": steps["step_description"],
