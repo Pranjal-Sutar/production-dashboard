@@ -1,4 +1,4 @@
-#last edited 14/4/26
+#last edited 15/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -384,7 +384,8 @@ Share the Google Sheet with this **service account email** as **Editor**:
 
 
 *(This is a system account, not a personal Gmail)*
-t
+`streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com`
+
 **3️⃣ Link Sheet to Product**
 - Enter the **exact Google Sheet name**
 - Click **Save**
@@ -735,12 +736,12 @@ if st.session_state.mode == "Operations":
         display = pd.DataFrame({
             "Done": steps["status"] == "Done",
             "Date": steps.apply(
-                lambda r: (
-                    pd.to_datetime(r["updated_on"], errors="coerce").strftime("%d/%m/%y")
-                    if pd.notna(r["updated_on"]) else ""
-                ),
-                axis=1
+            lambda r: (
+                pd.to_datetime(r["updated_on"], errors="coerce").strftime("%d/%m/%y")
+                if pd.notna(r["updated_on"]) else ""
             ),
+            axis=1
+        ),
             "Description": steps["step_description"],
             "Remark":      steps["remark"].fillna("")
         })
