@@ -1,4 +1,4 @@
-#last edited 18/4/26
+#last edited 14/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -266,28 +266,89 @@ Date: {row['po_date']}
 def build_context_with_steps(query=None):
     products = fetch_products()
     context = ""
+    all_rows = []
+    q = query.lower() if query else ""
 
     for _, p in products.iterrows():
         orders = fetch_orders(p["id"])
         if orders.empty:
             continue
-
         for _, row in orders.iterrows():
-            steps = fetch_po_steps(int(row["id"]))
+            all_rows.append((p, row))
 
-            done_steps = []
-            pending_steps = []
+    if not all_rows:
+        return "No relevant data found"
 
-            if not steps.empty:
-                for _, s in steps.iterrows():
-                    desc = s["step_description"]
-                    remark = s["remark"] or ""
-                    if s["status"] == "Done":
-                        done_steps.append(f"  ✅ {desc}" + (f" [{remark}]" if remark else ""))
-                    else:
-                        pending_steps.append(f"  ⏳ {desc}" + (f" [{remark}]" if remark else ""))
+    # status filter
+    if any(word in q for word in ["pending", "not started", "not done"]):
+        all_rows = [(p, r) for p, r in all_rows if r["status"] == "Not Started"]
+    elif any(word in q for word in ["completed", "done", "finished"]):
+        all_rows = [(p, r) for p, r in all_rows if r["status"] == "Completed"]
+    elif "cancelled" in q:
+        all_rows = [(p, r) for p, r in all_rows if r["status"] == "Cancelled"]
+    elif "in progress" in q:
+        all_rows = [(p, r) for p, r in all_rows if r["status"] == "In Progress"]
 
-            context += f"""
+    # customer filter
+    for p, row in all_rows:
+        if row["customer"] and row["customer"].lower() in q:
+            all_rows = [(p, r) for p, r in all_rows if r["customer"] and r["customer"].lower() == row["customer"].lower()]
+            break
+
+    # product filter
+
+    matched_product = None
+    for p, row in all_rows:
+        if p["product_name"].lower() in q:
+            matched_product = p["product_name"].lower()
+            break
+
+    if matched_product:
+        all_rows = [(p, r) for p, r in all_rows if p["product_name"].lower() == matched_product]
+    # PO number filter — if a specific PO number is mentioned
+    import re
+    po_match = re.search(r'\b(\d{5,})\b', q)
+    if po_match:
+        po_num = po_match.group(1)
+        all_rows = [(p, r) for p, r in all_rows if po_num in str(r["po_number"])]
+
+    # date filters
+    if any(word in q for word in ["recent", "latest", "last"]):
+        all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"], reverse=True)[:1]
+    elif "first" in q or "oldest" in q:
+        all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"])[:1]
+
+    # month filter
+    months = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12
+    }
+    for month_name, month_num in months.items():
+        if month_name in q:
+            all_rows = [
+                (p, r) for p, r in all_rows
+                if pd.to_datetime(r["po_date"], errors="coerce").month == month_num
+            ]
+            break
+
+    if not all_rows:
+        return "No relevant data found"
+
+    for p, row in all_rows:
+        steps = fetch_po_steps(int(row["id"]))
+        done_steps, pending_steps = [], []
+
+        if not steps.empty:
+            for _, s in steps.iterrows():
+                desc = s["step_description"]
+                remark = s["remark"] or ""
+                if s["status"] == "Done":
+                    done_steps.append(f"  ✅ {desc}" + (f" [{remark}]" if remark else ""))
+                else:
+                    pending_steps.append(f"  ⏳ {desc}" + (f" [{remark}]" if remark else ""))
+
+        context += f"""
 Product: {p['product_name']}
 PO: {row['po_number']}
 Customer: {row['customer']}
@@ -300,7 +361,7 @@ Steps remaining ({len(pending_steps)}):
 ---
 """
 
-    return context if context else "No relevant data found"
+    return context
 
 def is_step_query(query):
     q = query.lower()
@@ -316,9 +377,17 @@ def is_step_query(query):
 
 
 def format_steps_response(context, query):
-    """Format step-level context as styled HTML."""
+    import re
     blocks = context.split("---")
     result = []
+
+    # extract PO number or customer name from query for filtering
+    po_match = re.search(r'\b(\d{5,})\b', query)
+    po_filter = po_match.group(1) if po_match else None
+
+    # extract customer name filter
+    customer_filter = None
+    q = query.lower()
 
     for block in blocks:
         if "PO:" not in block:
@@ -349,6 +418,17 @@ def format_steps_response(context, query):
 
         if not po:
             continue
+
+        # filter by PO number if mentioned
+        if po_filter and po_filter not in po:
+            continue
+
+        # filter by customer if mentioned
+        if customer and customer.lower() in q:
+            pass  # keep this block
+        elif po_filter is None and customer and customer.lower() not in q:
+            # check if any customer name in query matches
+            pass  # let build_context_with_steps handle filtering
 
         done_html = "".join(
             f"<div style='padding:3px 0;color:#15803d;font-size:13px'>✅ {s}</div>"
@@ -388,7 +468,6 @@ def format_steps_response(context, query):
         return "No step data found."
 
     return f"<b>🛠 Step Breakdown</b><br>{''.join(result)}"
-
 
 def is_simple_query(query):
     q = query.lower()
