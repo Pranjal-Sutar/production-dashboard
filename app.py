@@ -1,4 +1,4 @@
-#last edited 14/4/26
+#last edited 20/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -44,6 +44,9 @@ st.session_state.setdefault("confirm_delete_po_number", None)
 st.session_state.setdefault("deleted_po_snapshot", None)     # holds deleted PO + steps for undo
 st.session_state.setdefault("last_api_call", 0)
 st.session_state.setdefault("last_query", "")
+st.session_state.setdefault("last_referenced_po", None)
+st.session_state.setdefault("last_referenced_product", None)
+st.session_state.setdefault("last_referenced_customer", None)
 st.session_state.setdefault("is_processing", False)
 # ================= HELPERS =================
 def fetch_products(active_only=True):
@@ -307,11 +310,11 @@ def build_context_with_steps(query=None):
         all_rows = [(p, r) for p, r in all_rows if p["product_name"].lower() == matched_product]
     # PO number filter — if a specific PO number is mentioned
     import re
-    po_match = re.search(r'\b(\d{5,})\b', q)
+    po_match = re.search(r'\b(\d{2,})\b', q)
     if po_match:
         po_num = po_match.group(1)
-        all_rows = [(p, r) for p, r in all_rows if po_num in str(r["po_number"])]
-
+        all_rows = [(p, r) for p, r in all_rows if str(r["po_number"]).strip() == po_num.strip()]
+        
     # date filters
     if any(word in q for word in ["recent", "latest", "last"]):
         all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"], reverse=True)[:1]
@@ -382,7 +385,7 @@ def format_steps_response(context, query):
     result = []
 
     # extract PO number or customer name from query for filtering
-    po_match = re.search(r'\b(\d{5,})\b', query)
+    po_match = re.search(r'\b(\d{2,})\b', query)
     po_filter = po_match.group(1) if po_match else None
 
     # extract customer name filter
@@ -420,7 +423,7 @@ def format_steps_response(context, query):
             continue
 
         # filter by PO number if mentioned
-        if po_filter and po_filter not in po:
+        if po_filter and po.strip() != po_filter.strip():
             continue
 
         # filter by customer if mentioned
@@ -471,17 +474,25 @@ def format_steps_response(context, query):
 
 def is_simple_query(query):
     q = query.lower()
-
     keywords = [
-    "pending", "not started", "completed",
-    "cancelled", "in progress",
-    "customer", "old", "recent",
-    "last", "latest", "first",
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december"
-]   
+        "pending", "not started", "completed",
+        "cancelled", "in progress",
+        "customer", "old", "recent",
+        "last", "latest", "first",
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december"
+    ]
+    # exclude analytical/calculation queries — let Gemini handle these
+    bypass_words = [
+        "days", "since", "how long", "passed", "ago", "calculate", "difference",
+        "todays date", "priority", "why", "which", "should", "recommend",
+        "important", "urgent", "analyse", "analyze", "suggest", "compare",
+        "what do you think", "how many", "count", "total"
+    ]
+    if any(word in q for word in bypass_words):
+        return False
     return any(word in q for word in keywords)
-
+    
 def format_orders(context, query):
     lines = context.split("---")
     result = []
@@ -569,15 +580,55 @@ def chat_with_data(user_query, product_id=None):
 
         st.session_state.last_api_call = time.time()
 
-        context = build_context_with_steps(user_query)
+        # ── Detect what's in the query FIRST ──
+        po_match = re.search(r'\b(\d{2,})\b', q)
+        has_po = po_match is not None
+        has_product = any(p.lower() in q for p in fetch_products()["product_name"].tolist())
+        broadening_words = ["other", "more", "else", "all", "any", "list", "how many", "total", "rest", "another"]
+        is_broadening = any(word in q for word in broadening_words)
+
+        # ── Enrich query with last referenced context for follow-ups ──
+        enriched_query = user_query
+
+        if not has_po and not has_product and not is_broadening:
+            if st.session_state.last_referenced_po:
+                enriched_query = f"{user_query} for PO {st.session_state.last_referenced_po}"
+            elif st.session_state.last_referenced_customer:
+                enriched_query = f"{user_query} for {st.session_state.last_referenced_customer}"
+            elif st.session_state.last_referenced_product:
+                enriched_query = f"{user_query} for {st.session_state.last_referenced_product}"
+        elif is_broadening and st.session_state.last_referenced_customer:
+            enriched_query = f"{user_query} for customer {st.session_state.last_referenced_customer}"
+
+        # ── Build context ──
+        context = build_context_with_steps(enriched_query)
+
+        # ── Save references for future follow-ups ──
+        if has_po:
+            st.session_state.last_referenced_po = po_match.group(1)
+        if has_product:
+            for pname in fetch_products()["product_name"].tolist():
+                if pname.lower() in q:
+                    st.session_state.last_referenced_product = pname
+                    break
+
+        # save customer from context
+        if context != "No relevant data found":
+            for block in context.split("---"):
+                for line in block.split("\n"):
+                    if line.strip().startswith("Customer:"):
+                        cust_val = line.split("Customer:")[1].strip()
+                        if cust_val:
+                            st.session_state.last_referenced_customer = cust_val
+                        break
 
         # Fast path 1 — simple order queries, no API
-        if is_simple_query(user_query) and not is_step_query(user_query):
-            return format_orders(context, user_query)
+        if is_simple_query(enriched_query) and not is_step_query(enriched_query):
+            return format_orders(context, enriched_query)
 
         # Fast path 2 — step queries, render as cards, no API
-        if is_step_query(user_query):
-            formatted = format_steps_response(context, user_query)
+        if is_step_query(enriched_query):
+            formatted = format_steps_response(context, enriched_query)
             if formatted and formatted != "No step data found.":
                 return formatted
 
@@ -590,6 +641,7 @@ def chat_with_data(user_query, product_id=None):
                 history_text += f"{role}: {clean_msg}\n"
 
         prompt = f"""You are a helpful business assistant for a manufacturing company.
+Today's date is: {date.today().strftime("%d %B %Y")}
 
 ONLY use the DATA below. Do not assume or invent anything outside it.
 
@@ -605,6 +657,9 @@ RESPONSE RULES:
   Customer: [name]
   Status: [status]
   Date: [date]
+- For date/time questions like "how many days since order":
+    * Use today's date provided above
+    * Calculate the difference yourself and state it clearly
 - For step/progress questions:
     * Show X/Y steps done (Z%) summary
     * COMPLETED STEPS — one step per line starting with ✅
@@ -623,6 +678,8 @@ QUESTION:
 {user_query}
 """
 
+
+
         response = model.generate_content(
             prompt,
             generation_config={"temperature": 0.1}
@@ -633,8 +690,8 @@ QUESTION:
 
     except Exception as e:
         import traceback
-        return f"⚠️ Error: {str(e)}"
-    
+        return f"⚠️ Error: {traceback.format_exc()}"        
+
     # ================= SIDEBAR =================
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
@@ -796,7 +853,12 @@ if st.session_state.mode == "Operations":
                     reply = chat_with_data(user_input)
 
             st.session_state.chat_history.append(("You", user_input))
-            st.session_state.chat_history.append(("Bot", format_bot_reply(reply)))
+
+            # only apply format_bot_reply to Gemini text responses, not already-HTML fast path responses
+            if reply.startswith("<div") or reply.startswith("<b>"):
+                st.session_state.chat_history.append(("Bot", reply))
+            else:
+                st.session_state.chat_history.append(("Bot", format_bot_reply(reply)))
 
             st.session_state.is_processing = False
 
