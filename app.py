@@ -1,4 +1,4 @@
-#last edited 15/4/26
+#last edited 18/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -96,6 +96,95 @@ def is_overdue(row, threshold=25):
         and days_since(row["po_date"]) >= threshold
     )
 
+def format_bot_reply(text):
+    import re
+
+    # detect PO blocks and convert them to styled cards
+    def render_po_block(block):
+        lines = block.strip().split("\n")
+        po, customer, status, date = "", "", "", ""
+        for line in lines:
+            line = line.strip()
+            if line.startswith("PO:"):
+                po = line.split("PO:")[1].strip()
+            elif line.startswith("Customer:"):
+                customer = line.split("Customer:")[1].strip()
+            elif line.startswith("Status:"):
+                status = line.split("Status:")[1].strip()
+            elif line.startswith("Date:"):
+                raw = line.split("Date:")[1].strip()
+                try:
+                    date = pd.to_datetime(raw).strftime("%d %b %Y")
+                except:
+                    date = raw
+
+        if not po:
+            return None
+
+        if status == "Completed":
+            color = "#16a34a"
+        elif status == "Not Started":
+            color = "#dc2626"
+        elif status == "In Progress":
+            color = "#f59e0b"
+        else:
+            color = "#555"
+
+        return f"""<div style="background:#f1f5f9;border-radius:8px;padding:8px 10px;margin:5px 0;font-size:12px;">
+  <div style="font-weight:600;color:#1e293b">📌 {po}</div>
+  <div style="color:#555">👤 {customer}</div>
+  <div style="color:{color};font-weight:500">● {status}</div>
+  <div style="color:#888">📅 {date}</div>
+</div>"""
+
+    # split text into PO blocks and non-PO text
+    # a PO block is any group of lines containing PO: Customer: Status: Date:
+    blocks = re.split(r'\n{2,}', text.strip())
+    html_parts = []
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        # check if this looks like a PO block
+        if "PO:" in block and "Customer:" in block and "Status:" in block:
+            card = render_po_block(block)
+            if card:
+                html_parts.append(card)
+                continue
+
+        # otherwise render line by line
+        for line in block.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("## "):
+                html_parts.append(f"<div style='font-weight:600;font-size:13px;margin:10px 0 4px;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:4px'>{line[3:]}</div>")
+            elif line.startswith("# "):
+                html_parts.append(f"<div style='font-weight:600;font-size:14px;margin:8px 0 4px;color:#1e293b'>{line[2:]}</div>")
+            elif line.startswith("✅"):
+                line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
+                html_parts.append(f"<div style='padding:2px 0;color:#15803d;font-size:12px'>{line}</div>")
+            elif line.startswith("⏳"):
+                line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
+                html_parts.append(f"<div style='padding:2px 0;color:#b45309;font-size:12px'>{line}</div>")
+            elif line.startswith("- ") or line.startswith("* "):
+                content = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line[2:])
+                html_parts.append(f"<div style='padding:3px 0 3px 8px;font-size:12px;color:#374151;border-left:2px solid #e2e8f0;margin:2px 0'>• {content}</div>")
+            elif line.startswith("**") and line.endswith("**"):
+                html_parts.append(f"<div style='font-weight:600;font-size:13px;margin:6px 0 2px'>{line[2:-2]}</div>")
+            else:
+                line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
+                html_parts.append(f"<div style='font-size:13px;margin:2px 0;color:#374151'>{line}</div>")
+
+    inner = "".join(html_parts)
+    return f"""<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:6px 0;">
+{inner}
+</div>"""
+
+
+
 def build_context_all(query=None):
     products = fetch_products()
     context = ""
@@ -173,6 +262,132 @@ Date: {row['po_date']}
 """
 
     return context
+
+def build_context_with_steps(query=None):
+    products = fetch_products()
+    context = ""
+
+    for _, p in products.iterrows():
+        orders = fetch_orders(p["id"])
+        if orders.empty:
+            continue
+
+        for _, row in orders.iterrows():
+            steps = fetch_po_steps(int(row["id"]))
+
+            done_steps = []
+            pending_steps = []
+
+            if not steps.empty:
+                for _, s in steps.iterrows():
+                    desc = s["step_description"]
+                    remark = s["remark"] or ""
+                    if s["status"] == "Done":
+                        done_steps.append(f"  ✅ {desc}" + (f" [{remark}]" if remark else ""))
+                    else:
+                        pending_steps.append(f"  ⏳ {desc}" + (f" [{remark}]" if remark else ""))
+
+            context += f"""
+Product: {p['product_name']}
+PO: {row['po_number']}
+Customer: {row['customer']}
+Status: {row['status']}
+Date: {row['po_date']}
+Steps completed ({len(done_steps)}):
+{chr(10).join(done_steps) if done_steps else "  None"}
+Steps remaining ({len(pending_steps)}):
+{chr(10).join(pending_steps) if pending_steps else "  All done"}
+---
+"""
+
+    return context if context else "No relevant data found"
+
+def is_step_query(query):
+    q = query.lower()
+    keywords = [
+        "step", "steps", "remaining", "pending step", "completed step",
+        "which step", "what step", "how many step", "progress",
+        "done step", "next step", "track", "stage", "stages",
+        "going", "current", "happening", "where is", "what is left",
+        "what's left", "what remains", "how far", "how complete",
+        "chal raha", "kya hua", "kitna"
+    ]
+    return any(word in q for word in keywords)
+
+
+def format_steps_response(context, query):
+    """Format step-level context as styled HTML."""
+    blocks = context.split("---")
+    result = []
+
+    for block in blocks:
+        if "PO:" not in block:
+            continue
+
+        po, product, customer, status = "", "", "", ""
+        done_lines, pending_lines = [], []
+        section = None
+
+        for line in block.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("Product:"):
+                product = line.split("Product:")[1].strip()
+            elif line.startswith("PO:"):
+                po = line.split("PO:")[1].strip()
+            elif line.startswith("Customer:"):
+                customer = line.split("Customer:")[1].strip()
+            elif line.startswith("Status:"):
+                status = line.split("Status:")[1].strip()
+            elif line.startswith("Steps completed"):
+                section = "done"
+            elif line.startswith("Steps remaining"):
+                section = "pending"
+            elif line.startswith("✅") and section == "done":
+                done_lines.append(line.replace("✅", "").strip())
+            elif line.startswith("⏳") and section == "pending":
+                pending_lines.append(line.replace("⏳", "").strip())
+
+        if not po:
+            continue
+
+        done_html = "".join(
+            f"<div style='padding:3px 0;color:#15803d;font-size:13px'>✅ {s}</div>"
+            for s in done_lines
+        ) or "<div style='color:#888;font-size:13px'>None yet</div>"
+
+        pending_html = "".join(
+            f"<div style='padding:3px 0;color:#b45309;font-size:13px'>⏳ {s}</div>"
+            for s in pending_lines
+        ) or "<div style='color:#15803d;font-size:13px'>All steps complete!</div>"
+
+        total = len(done_lines) + len(pending_lines)
+        pct = int((len(done_lines) / total * 100)) if total else 0
+
+        result.append(f"""
+<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:8px 0;">
+  <div style="font-weight:600;font-size:14px;margin-bottom:2px;">📌 {po}</div>
+  <div style="color:#2563eb;font-size:13px;font-weight:500;">{product}</div>
+  <div style="color:#555;font-size:13px;">{customer}</div>
+  <div style="margin:8px 0 4px;">
+    <div style="background:#e2e8f0;border-radius:99px;height:6px;width:100%;">
+      <div style="background:#16a34a;width:{pct}%;height:6px;border-radius:99px;"></div>
+    </div>
+    <div style="font-size:12px;color:#888;margin-top:3px;">{len(done_lines)}/{total} steps done ({pct}%)</div>
+  </div>
+  <details style="margin-top:8px;">
+    <summary style="font-size:13px;font-weight:500;cursor:pointer;color:#374151;">Completed steps</summary>
+    <div style="margin-top:6px;">{done_html}</div>
+  </details>
+  <details open style="margin-top:6px;">
+    <summary style="font-size:13px;font-weight:500;cursor:pointer;color:#374151;">Remaining steps</summary>
+    <div style="margin-top:6px;">{pending_html}</div>
+  </details>
+</div>""")
+
+    if not result:
+        return "No step data found."
+
+    return f"<b>🛠 Step Breakdown</b><br>{''.join(result)}"
 
 
 def is_simple_query(query):
@@ -266,29 +481,61 @@ def format_orders(context, query):
 def chat_with_data(user_query, product_id=None):
     try:
         import time
+        import re
 
         q = user_query.strip().lower()
 
-        context = build_context_all(user_query)
-
-        # ✅ 1. HANDLE SIMPLE QUERIES FIRST (NO API)
-        if is_simple_query(user_query):
-            return format_orders(context, user_query)
-
-        # ✅ 2. Prevent duplicate (but allow meaningful queries)
-        if q == st.session_state.last_query and len(q) < 10:
-            return "⚠️ Try a more specific question."
-
-        # ✅ 3. Cooldown only for API
-        if time.time() - st.session_state.last_api_call < 10:
-            return "⏳ Please wait a few seconds..."
+        if time.time() - st.session_state.last_api_call < 3:
+            return "⏳ Please wait a moment..."
 
         st.session_state.last_api_call = time.time()
 
-        prompt = f"""You are a helpful business assistant.
+        context = build_context_with_steps(user_query)
 
-ONLY use the given DATA. Do not assume anything.
-Give clean, structured answers using bullet points.
+        # Fast path 1 — simple order queries, no API
+        if is_simple_query(user_query) and not is_step_query(user_query):
+            return format_orders(context, user_query)
+
+        # Fast path 2 — step queries, render as cards, no API
+        if is_step_query(user_query):
+            formatted = format_steps_response(context, user_query)
+            if formatted and formatted != "No step data found.":
+                return formatted
+
+        # Gemini for everything else
+        history_text = ""
+        if "chat_history" in st.session_state and len(st.session_state.chat_history) > 1:
+            recent = st.session_state.chat_history[-6:]
+            for role, msg in recent:
+                clean_msg = re.sub(r'<[^>]+>', '', msg).strip()
+                history_text += f"{role}: {clean_msg}\n"
+
+        prompt = f"""You are a helpful business assistant for a manufacturing company.
+
+ONLY use the DATA below. Do not assume or invent anything outside it.
+
+CONVERSATION HISTORY (for context on follow-up questions):
+{history_text if history_text else "No previous messages"}
+
+RESPONSE RULES:
+- For order status questions: mention PO number, customer, status, date
+- For counting questions like "how many orders": give the count first, then list each order
+- When listing multiple orders, put EACH order as its own block with a blank line between them
+- Format each order exactly like this (one field per line, no commas):
+  PO: [number]
+  Customer: [name]
+  Status: [status]
+  Date: [date]
+- For step/progress questions:
+    * Show X/Y steps done (Z%) summary
+    * COMPLETED STEPS — one step per line starting with ✅
+    * REMAINING STEPS — one step per line starting with ⏳
+    * Each step on its own line, never in a paragraph
+- If asked "which step is going" or "current step" → show the last ✅ step and next ⏳ step only
+- For follow-up questions → use the PO from conversation history
+- Use ## for section headers
+- Do NOT use **bold** markdown for field labels
+- If nothing relevant found in DATA, say "This order was not found in the system"
 
 DATA:
 {context}
@@ -299,19 +546,16 @@ QUESTION:
 
         response = model.generate_content(
             prompt,
-            generation_config={"temperature": 0.2}
+            generation_config={"temperature": 0.1}
         )
 
-        response_text = response.text.strip()
-
-        # ✅ 4. Update AFTER response (important fix)
         st.session_state.last_query = q
-
-        return response_text
+        return response.text.strip()
 
     except Exception as e:
-        return f"⚠️Something went wrong. Please try again"    
-        
+        import traceback
+        return f"⚠️ Error: {str(e)}"
+    
     # ================= SIDEBAR =================
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
@@ -384,8 +628,7 @@ Share the Google Sheet with this **service account email** as **Editor**:
 
 
 *(This is a system account, not a personal Gmail)*
-`streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com`
-
+t
 **3️⃣ Link Sheet to Product**
 - Enter the **exact Google Sheet name**
 - Click **Save**
@@ -474,7 +717,7 @@ if st.session_state.mode == "Operations":
                     reply = chat_with_data(user_input)
 
             st.session_state.chat_history.append(("You", user_input))
-            st.session_state.chat_history.append(("Bot", reply))
+            st.session_state.chat_history.append(("Bot", format_bot_reply(reply)))
 
             st.session_state.is_processing = False
 
