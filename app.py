@@ -587,14 +587,7 @@ def chat_with_data(user_query, product_id=None):
         broadening_words = ["other", "more", "else", "all", "any", "list", "how many", "total", "rest", "another"]
         is_broadening = any(word in q for word in broadening_words)
 
-        # 🔄 Auto-switch product if user mentions another product
-        for pname in fetch_products()["product_name"].tolist():
-            if pname.lower() in q:
-                if st.session_state.selected_product != pname:
-                    st.session_state.selected_product = pname
-                    st.session_state.view_mode = "orders"   # reset to orders screen
-                break
-
+    
         # ── Enrich query with last referenced context for follow-ups ──
         enriched_query = user_query
 
