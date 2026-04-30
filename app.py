@@ -300,15 +300,29 @@ def build_context_with_steps(query=None):
 
     # product filter
 
-    matched_product = None
-    for p, row in all_rows:
-        if p["product_name"].lower() in q:
-            matched_product = p["product_name"].lower()
+    # 🔥 dynamic product detection (no hardcoding)
+        products_df = fetch_products()
+        product_names = [p.lower() for p in products_df["product_name"].tolist()]
+        
+        matched_product = None
+        
+        for pname in product_names:
+        if pname in q:
+            matched_product = pname
             break
-
-    if matched_product:
-        all_rows = [(p, r) for p, r in all_rows if p["product_name"].lower() == matched_product]
-    # PO number filter — if a specific PO number is mentioned
+        
+        # apply filter if found
+        if matched_product:
+        all_rows = [
+            (p, r) for p, r in all_rows
+            if p["product_name"].lower() == matched_product
+        ]
+        
+        # ❗ IMPORTANT: if user asked for product but none matched
+        elif any(word in q for word in ["order", "po", "product"]):
+        return "No relevant data found."    
+            
+# PO number filter — if a specific PO number is mentioned
     import re
     po_match = re.search(r'\b(\d{2,})\b', q)
     if po_match:
