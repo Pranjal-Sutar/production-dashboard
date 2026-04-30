@@ -302,14 +302,14 @@ def build_context_with_steps(query=None):
 
     # 🔥 dynamic product detection (no hardcoding)
     products_df = fetch_products()
-        product_names = [p.lower() for p in products_df["product_name"].tolist()]
+    product_names = [p.lower() for p in products_df["product_name"].tolist()]
         
-        matched_product = None
+    matched_product = None
         
-        for pname in product_names:
-            if pname in q:
-                matched_product = pname
-                break
+    for pname in product_names:
+        if pname in q:
+            matched_product = pname
+            break
         
         # apply filter if found
         if matched_product:
