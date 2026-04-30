@@ -313,14 +313,14 @@ def build_context_with_steps(query=None):
         
         # apply filter if found
         if matched_product:
-        all_rows = [
-            (p, r) for p, r in all_rows
-            if p["product_name"].lower() == matched_product
-        ]
+            all_rows = [
+                (p, r) for p, r in all_rows
+                if p["product_name"].lower() == matched_product
+            ]
         
         # ❗ IMPORTANT: if user asked for product but none matched
         elif any(word in q for word in ["order", "po", "product"]):
-        return "No relevant data found."    
+            return "No relevant data found."    
             
 # PO number filter — if a specific PO number is mentioned
     import re
