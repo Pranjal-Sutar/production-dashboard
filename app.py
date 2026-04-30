@@ -307,9 +307,9 @@ def build_context_with_steps(query=None):
         matched_product = None
         
         for pname in product_names:
-        if pname in q:
-            matched_product = pname
-            break
+            if pname in q:
+                matched_product = pname
+                break
         
         # apply filter if found
         if matched_product:
