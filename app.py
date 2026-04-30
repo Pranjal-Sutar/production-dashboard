@@ -1,4 +1,4 @@
-#last edited 20/4/26
+#last edited 30/4/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -301,7 +301,7 @@ def build_context_with_steps(query=None):
     # product filter
 
     # 🔥 dynamic product detection (no hardcoding)
-        products_df = fetch_products()
+    products_df = fetch_products()
         product_names = [p.lower() for p in products_df["product_name"].tolist()]
         
         matched_product = None
