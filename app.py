@@ -226,10 +226,12 @@ def build_context_all(query=None):
 
     # -------- CUSTOMER FILTER --------
     for _, row in orders.iterrows():
-        if row["customer"] and row["customer"].lower() in q:
-            orders = orders[orders["customer"].str.lower() == row["customer"].lower()]
-            break
-
+        if row["customer"]:
+    cname = row["customer"].lower()
+    
+    # exact match OR strong match only
+    if cname in q.split():
+        matched_customer = cname
     # -------- DATE FILTER --------
     if any(word in q for word in ["recent", "latest", "last"]):
         orders = orders.sort_values(by="po_date", ascending=False).head(1)
