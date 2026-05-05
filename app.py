@@ -300,27 +300,32 @@ def build_context_with_steps(query=None):
 
     # product filter
 
-    # -------- PRODUCT FILTER --------
+  # -------- PRODUCT FILTER --------
 
     products_df = fetch_products()
     product_names = [p.lower() for p in products_df["product_name"].tolist()]
     
     matched_product = None
     
+    # ✅ STRICT + FLEXIBLE MATCH
     for pname in product_names:
-        words = pname.split()
-        
-        # match if ANY word appears in query
-        if any(word in q for word in words):
+        # exact match
+        if pname in q:
             matched_product = pname
             break
     
+        # word match (only meaningful words)
+        pname_words = pname.split()
+        if all(word in q for word in pname_words):
+            matched_product = pname
+            break
+    
+    # apply filter if found
     if matched_product:
         all_rows = [
             (p, r) for p, r in all_rows
             if p["product_name"].lower() == matched_product
-        ]
-        
+        ]      
     # date filters
     if any(word in q for word in ["recent", "latest", "last"]):
         all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"], reverse=True)[:1]
