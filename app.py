@@ -228,20 +228,20 @@ def build_context_all(query=None):
     matched_customer = None
     
     for p, row in all_rows:
-    if row["customer"]:
-        cname = row["customer"].lower()
+        if row["customer"]:
+            cname = row["customer"].lower()
     
-        # strict match (word-level)
-        if cname in q.split():
-            matched_customer = cname
-            break
+            # strict match (word-level)
+            if cname in q.split():
+                matched_customer = cname
+                break
     
     # apply filter ONLY if clearly asked
     if matched_customer and "customer" in q:
-    all_rows = [
-        (p, r) for p, r in all_rows
-        if r["customer"] and r["customer"].lower() == matched_customer
-    ]
+        all_rows = [
+            (p, r) for p, r in all_rows
+            if r["customer"] and r["customer"].lower() == matched_customer
+        ]
     # -------- DATE FILTER --------
     if any(word in q for word in ["recent", "latest", "last"]):
         orders = orders.sort_values(by="po_date", ascending=False).head(1)
