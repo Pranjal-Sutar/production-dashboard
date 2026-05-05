@@ -225,22 +225,9 @@ def build_context_all(query=None):
         orders = orders[orders["status"] == "In Progress"]
 
     # -------- CUSTOMER FILTER --------
-    matched_customer = None
-    
-    for p, row in all_rows:
-        if row["customer"]:
-            cname = row["customer"].lower()
-    
-            # strict match (word-level)
-            if cname in q.split():
-                matched_customer = cname
-                break
-    
-    # apply filter ONLY if clearly asked
-    if matched_customer and "customer" in q:
-        all_rows = [
-            (p, r) for p, r in all_rows
-            if r["customer"] and r["customer"].lower() == matched_customer
+    if "customer" in q:
+        orders = orders[
+            orders["customer"].str.lower().apply(lambda x: x in q if isinstance(x, str) else False)
         ]
     # -------- DATE FILTER --------
     if any(word in q for word in ["recent", "latest", "last"]):
@@ -304,11 +291,22 @@ def build_context_with_steps(query=None):
     elif "in progress" in q:
         all_rows = [(p, r) for p, r in all_rows if r["status"] == "In Progress"]
 
-    # customer filter
+   # -------- CUSTOMER FILTER --------
+    matched_customer = None
+    
     for p, row in all_rows:
-        if row["customer"] and row["customer"].lower() in q:
-            all_rows = [(p, r) for p, r in all_rows if r["customer"] and r["customer"].lower() == row["customer"].lower()]
-            break
+        if row["customer"]:
+            cname = row["customer"].lower()
+    
+            if cname in q.split():
+                matched_customer = cname
+                break
+    
+    if matched_customer and "customer" in q:
+        all_rows = [
+            (p, r) for p, r in all_rows
+            if r["customer"] and r["customer"].lower() == matched_customer
+        ]
 
     # product filter
 
@@ -337,7 +335,10 @@ def build_context_with_steps(query=None):
         all_rows = [
             (p, r) for p, r in all_rows
             if p["product_name"].lower() == matched_product
-        ]      
+        ]   
+
+    elif any(word in q for word in ["order", "orders", "po"]):
+            return "No relevant data found"
     # date filters
     if any(word in q for word in ["recent", "latest", "last"]):
         all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"], reverse=True)[:1]
@@ -567,9 +568,8 @@ def format_orders(context, query):
 <span style='color:#888'>📅 {date}</span>
 </div>"""
             )
-
     if not result:
-        return "Not available in system data"
+        return "No orders found"
 
     q = query.lower()
 
@@ -627,7 +627,12 @@ def chat_with_data(user_query, product_id=None):
         # ── Build context ──
         context = build_context_with_steps(enriched_query)
 
+        # fallback if empty
+        if not context or "No relevant" in context:
+            context = build_context_all(enriched_query)
+            
         # ── Save references for future follow-ups ──
+        
         if has_po:
             st.session_state.last_referenced_po = po_match.group(1)
         if has_product:
