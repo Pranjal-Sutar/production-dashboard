@@ -1,4 +1,4 @@
-#last edited 20/4/26
+#last edited 05/05/26
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -624,12 +624,14 @@ def chat_with_data(user_query, product_id=None):
         elif is_broadening and st.session_state.last_referenced_customer:
             enriched_query = f"{user_query} for customer {st.session_state.last_referenced_customer}"
 
-        # ── Build context ──
         context = build_context_with_steps(enriched_query)
-
-        # fallback if empty
-        if not context or "No relevant" in context:
+        
+        # 🚨 IMPORTANT FIX: don't fallback if product query failed
+        if not context:
             context = build_context_all(enriched_query)
+        
+        elif "No relevant data found" in context:
+            return "<div style='padding:8px;border-radius:8px;background:#fef2f2;color:#dc2626;'>❌ No orders found for this product</div>"
             
         # ── Save references for future follow-ups ──
         
