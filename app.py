@@ -280,8 +280,8 @@ def build_context_with_steps(query=None):
             all_rows.append((p, row))
 
     if not all_rows:
-        return "No relevant data found"
-
+        return build_context_all(query)
+        
     # status filter
     if any(word in q for word in ["pending", "not started", "not done"]):
         all_rows = [(p, r) for p, r in all_rows if r["status"] == "Not Started"]
@@ -300,20 +300,26 @@ def build_context_with_steps(query=None):
 
     # product filter
 
-    matched_product = None
-    for p, row in all_rows:
-        if p["product_name"].lower() in q:
-            matched_product = p["product_name"].lower()
-            break
+    # -------- PRODUCT FILTER --------
 
+    products_df = fetch_products()
+    product_names = [p.lower() for p in products_df["product_name"].tolist()]
+    
+    matched_product = None
+    
+    for pname in product_names:
+        words = pname.split()
+        
+        # match if ANY word appears in query
+        if any(word in q for word in words):
+            matched_product = pname
+            break
+    
     if matched_product:
-        all_rows = [(p, r) for p, r in all_rows if p["product_name"].lower() == matched_product]
-    # PO number filter — if a specific PO number is mentioned
-    import re
-    po_match = re.search(r'\b(\d{2,})\b', q)
-    if po_match:
-        po_num = po_match.group(1)
-        all_rows = [(p, r) for p, r in all_rows if str(r["po_number"]).strip() == po_num.strip()]
+        all_rows = [
+            (p, r) for p, r in all_rows
+            if p["product_name"].lower() == matched_product
+        ]
         
     # date filters
     if any(word in q for word in ["recent", "latest", "last"]):
