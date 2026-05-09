@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 import time
 import re
-# ================= CONFIG =================
+
 st.set_page_config(layout="wide")
 
 st.markdown("""
@@ -32,24 +32,23 @@ model = genai.GenerativeModel("gemini-flash-latest")
 ORDER_STATUSES = ["Not Started", "In Progress", "Completed", "Cancelled"]
 
 
-# ================= SESSION =================
 st.session_state.setdefault("mode", "Operations")
 st.session_state.setdefault("selected_product", None)
 st.session_state.setdefault("view_mode", "orders")
 st.session_state.setdefault("active_po_id", None)
-st.session_state.setdefault("active_po_number", None)        # store label for breadcrumb
-st.session_state.setdefault("confirm_delete_pid", None)      # product pending deletion
-st.session_state.setdefault("last_added_product", None)      # force sidebar to show new product
-st.session_state.setdefault("confirm_delete_po_id", None)    # PO pending deletion
+st.session_state.setdefault("active_po_number", None)        
+st.session_state.setdefault("confirm_delete_pid", None)      
+st.session_state.setdefault("last_added_product", None)      
+st.session_state.setdefault("confirm_delete_po_id", None)    
 st.session_state.setdefault("confirm_delete_po_number", None)
-st.session_state.setdefault("deleted_po_snapshot", None)     # holds deleted PO + steps for undo
+st.session_state.setdefault("deleted_po_snapshot", None)     
 st.session_state.setdefault("last_api_call", 0)
 st.session_state.setdefault("last_query", "")
 st.session_state.setdefault("last_referenced_po", None)
 st.session_state.setdefault("last_referenced_product", None)
 st.session_state.setdefault("last_referenced_customer", None)
 st.session_state.setdefault("is_processing", False)
-# ================= HELPERS =================
+
 def fetch_products(active_only=True):
     query = supabase.table("products").select("*")
     
@@ -283,7 +282,7 @@ def _filter_context(full_context, q):
             matched.append((score, block))
  
     if not matched:
-        return full_context          # ← FALLBACK: never block Gemini
+        return full_context          
  
     matched.sort(key=lambda x: -x[0])
     return "---\n".join(b for _, b in matched) + "\n---"
@@ -309,13 +308,10 @@ def chat_with_data(user_query, product_id=None):
             elif st.session_state.last_referenced_product:
                 enriched += f" (for product {st.session_state.last_referenced_product})"
  
-        # ── Always build full context ──
         full_context = build_full_context()
- 
-        # ── Filter for fast-path rendering only ──
+
         filtered = _filter_context(full_context, enriched.lower())
  
-        # ── Update session references from filtered context ──
         for block in filtered.split("---"):
             for line in block.strip().splitlines():
                 line = line.strip()
@@ -330,13 +326,11 @@ def chat_with_data(user_query, product_id=None):
                     if val:
                         st.session_state.last_referenced_product = val
  
-        # ── Fast-path: step queries → styled cards ──
         if _is_step_query(q):
             result = _render_step_cards(filtered)
             if result:
                 return result
  
-        # ── Fast-path: simple status/list queries → order cards ──
         if _is_simple_status(q) and not _is_step_query(q):
             titles = {
                 "not started": "📦 <b>Pending Orders</b>",
@@ -350,7 +344,6 @@ def chat_with_data(user_query, product_id=None):
             if result:
                 return result
  
-        # ── Gemini handles EVERYTHING else ──
         history_text = ""
         if "chat_history" in st.session_state:
             recent = st.session_state.chat_history[-6:]
@@ -453,15 +446,15 @@ def format_bot_reply(text):
     return f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:6px 0;'>{inner}</div>"
 
 
-    # ================= SIDEBAR =================
+    # Sidebar
 st.sidebar.header("Mode")
 st.session_state.mode = st.sidebar.radio("Select Mode", ["Operations", "Admin"])
 
 
-# ================= ADMIN =================
+#Admin Mode
 if st.session_state.mode == "Admin":
 
-    # ---------- PRODUCTS ----------
+    #Product Control 
     products = fetch_products(active_only=False)
 
 
@@ -488,7 +481,7 @@ if st.session_state.mode == "Admin":
         if c5.button("🗑", key=f"del_{pid}"):
             st.session_state.confirm_delete_pid = pid
 
-    # ── Confirmation dialog rendered outside the column loop ──
+    #Confirmation box before deleting anything 
     if st.session_state.confirm_delete_pid is not None:
         cpid  = st.session_state.confirm_delete_pid
         cname = products.loc[products["id"] == cpid, "product_name"].values
@@ -510,7 +503,7 @@ if st.session_state.mode == "Admin":
     st.divider()
     st.subheader("Want to add a new product? Follow the steps below")
 
-    # ---------- GUIDE ----------
+    # Guide for first time user
     st.info("""
 
 **1️⃣ Google Sheet Structure**
@@ -536,7 +529,7 @@ t
 
     st.divider()
 
-    # ---------- ADD PRODUCT ----------
+    # Add new product 
     with st.form("add_product"):
         pname  = st.text_input("Product Name")
         sname  = st.text_input("Google Sheet Name")
@@ -553,7 +546,7 @@ t
         st.rerun()
 
 
-# ================= OPERATIONS =================
+# Operations 
 if st.session_state.mode == "Operations":
 
     products = fetch_products()
@@ -642,7 +635,7 @@ if st.session_state.mode == "Operations":
 
     
 
-    # ── If the user switched product while in steps view, return to orders ──
+    # If the user switched product while in steps view, return to orders
     if st.session_state.view_mode == "steps" and st.session_state.active_po_id is not None:
         belongs = supabase.table("purchase_orders") \
             .select("id") \
@@ -663,7 +656,7 @@ if st.session_state.mode == "Operations":
                 st.rerun()
         st.divider()
 
-    # ================= ORDERS =================
+    # Orders handling
     main_col = st.container()
 
     
@@ -674,10 +667,6 @@ if st.session_state.mode == "Operations":
             orders = fetch_orders(product_id)
             
             if not orders.empty:
-
-                # ── Inject CSS once: .row-highlight wraps each overdue row ──
-                
-
                 # ── Overdue alert banner ──
                 overdue_orders = orders[orders.apply(is_overdue, axis=1)]
                 if not overdue_orders.empty:
@@ -689,7 +678,7 @@ if st.session_state.mode == "Operations":
                         icon="🚨"
                     )
 
-                # ── Column headers ──
+                # Column headers
                 h1, h2, h3, h4, h5 = st.columns([2, 2, 1.5, 2, 0.5])
                 h1.markdown("**PO Number**")
                 h2.markdown("**Customer**")
@@ -697,7 +686,7 @@ if st.session_state.mode == "Operations":
                 h4.markdown("**Status**")
                 h5.markdown("**Del**")
 
-                # ── One row per PO ──
+                # One row per PO 
                 for _, row in orders.iterrows():
                     po_id_row = int(row["id"])
                     age       = days_since(row["po_date"])
@@ -705,7 +694,6 @@ if st.session_state.mode == "Operations":
 
                     c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 2, 0.5])
 
-                    # Inject an invisible tagged div into c1 so CSS can target the parent row
                     if overdue:
                         c1.markdown(
                             f'<div class="overdue-row">{row["po_number"]}</div>',
@@ -730,12 +718,12 @@ if st.session_state.mode == "Operations":
                             .eq("id", po_id_row) \
                             .execute()
 
-                    # ── Delete button ──
+                    # Delete button 
                     if c5.button("🗑", key=f"del_po_{po_id_row}", help="Delete this PO"):
                         st.session_state.confirm_delete_po_id     = po_id_row
                         st.session_state.confirm_delete_po_number = row["po_number"]
 
-                # ── PO deletion confirmation banner ──
+                # PO deletion confirmation
                 if st.session_state.confirm_delete_po_id is not None:
                     po_label = st.session_state.confirm_delete_po_number
                     st.warning(
@@ -778,7 +766,7 @@ if st.session_state.mode == "Operations":
                         st.session_state.confirm_delete_po_number = None
                         st.rerun()
 
-                # ── Undo banner ──
+                # Undo banner
                 if st.session_state.deleted_po_snapshot is not None:
                     snap    = st.session_state.deleted_po_snapshot
                     po_data = snap["po"]
@@ -934,7 +922,7 @@ if st.session_state.mode == "Operations":
         if needs_rerun:
             st.rerun()
 
-        # ── Add a custom step row ──
+        # Add a custom step row 
         st.divider()
         with st.form("add_step"):
             new_desc = st.text_input("Step Description", placeholder="Enter new step...")
