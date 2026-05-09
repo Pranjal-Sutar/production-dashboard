@@ -506,25 +506,26 @@ if st.session_state.mode == "Admin":
     # Guide for first time user
     st.info("""
 
-**1️⃣ Google Sheet Structure**
+**1. Google Sheet Structure**
 - First **3 rows** can be headers / notes (ignored)
 - Actual steps must start from **row 4**
 - Step description must be in **column C**
 
-**2️⃣ Share the Sheet**
+**2. Share the Sheet**
 Share the Google Sheet with this **service account email** as **Editor**:
 
 📧 **SERVICE ACCOUNT EMAIL**  
 
 streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com
+
 *(This is a system account, not a personal Gmail)*
 
-**3️⃣ Link Sheet to Product**
+**3. Link Sheet to Product**
 - Enter the **exact Google Sheet name**
 - Click **Save**
 - Steps will auto-load for every PO of this product
 
-ℹ️ If the sheet name changes later, just update it here — no code changes needed.
+FYI - If the sheet name changes later, just update it here — no code changes needed.
 """)
 
     st.divider()
