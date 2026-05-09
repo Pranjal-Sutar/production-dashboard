@@ -8,6 +8,7 @@ from sheets import get_steps_raw
 from dotenv import load_dotenv
 load_dotenv()
 import time
+import re
 # ================= CONFIG =================
 st.set_page_config(layout="wide")
 
@@ -99,378 +100,108 @@ def is_overdue(row, threshold=25):
         and days_since(row["po_date"]) >= threshold
     )
 
-def format_bot_reply(text):
-    import re
-
-    # detect PO blocks and convert them to styled cards
-    def render_po_block(block):
-        lines = block.strip().split("\n")
-        po, customer, status, date = "", "", "", ""
-        for line in lines:
-            line = line.strip()
-            if line.startswith("PO:"):
-                po = line.split("PO:")[1].strip()
-            elif line.startswith("Customer:"):
-                customer = line.split("Customer:")[1].strip()
-            elif line.startswith("Status:"):
-                status = line.split("Status:")[1].strip()
-            elif line.startswith("Date:"):
-                raw = line.split("Date:")[1].strip()
-                try:
-                    date = pd.to_datetime(raw).strftime("%d %b %Y")
-                except:
-                    date = raw
-
-        if not po:
-            return None
-
-        if status == "Completed":
-            color = "#16a34a"
-        elif status == "Not Started":
-            color = "#dc2626"
-        elif status == "In Progress":
-            color = "#f59e0b"
-        else:
-            color = "#555"
-
-        return f"""<div style="background:#f1f5f9;border-radius:8px;padding:8px 10px;margin:5px 0;font-size:12px;">
-  <div style="font-weight:600;color:#1e293b">📌 {po}</div>
-  <div style="color:#555">👤 {customer}</div>
-  <div style="color:{color};font-weight:500">● {status}</div>
-  <div style="color:#888">📅 {date}</div>
-</div>"""
-
-    # split text into PO blocks and non-PO text
-    # a PO block is any group of lines containing PO: Customer: Status: Date:
-    blocks = re.split(r'\n{2,}', text.strip())
-    html_parts = []
-
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
-
-        # check if this looks like a PO block
-        if "PO:" in block and "Customer:" in block and "Status:" in block:
-            card = render_po_block(block)
-            if card:
-                html_parts.append(card)
-                continue
-
-        # otherwise render line by line
-        for line in block.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("## "):
-                html_parts.append(f"<div style='font-weight:600;font-size:13px;margin:10px 0 4px;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:4px'>{line[3:]}</div>")
-            elif line.startswith("# "):
-                html_parts.append(f"<div style='font-weight:600;font-size:14px;margin:8px 0 4px;color:#1e293b'>{line[2:]}</div>")
-            elif line.startswith("✅"):
-                line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
-                html_parts.append(f"<div style='padding:2px 0;color:#15803d;font-size:12px'>{line}</div>")
-            elif line.startswith("⏳"):
-                line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
-                html_parts.append(f"<div style='padding:2px 0;color:#b45309;font-size:12px'>{line}</div>")
-            elif line.startswith("- ") or line.startswith("* "):
-                content = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line[2:])
-                html_parts.append(f"<div style='padding:3px 0 3px 8px;font-size:12px;color:#374151;border-left:2px solid #e2e8f0;margin:2px 0'>• {content}</div>")
-            elif line.startswith("**") and line.endswith("**"):
-                html_parts.append(f"<div style='font-weight:600;font-size:13px;margin:6px 0 2px'>{line[2:-2]}</div>")
-            else:
-                line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
-                html_parts.append(f"<div style='font-size:13px;margin:2px 0;color:#374151'>{line}</div>")
-
-    inner = "".join(html_parts)
-    return f"""<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:6px 0;">
-{inner}
-</div>"""
-
-
-
-def build_context_all(query=None):
+def build_full_context():
+    """
+    Fetches every product + every order + every step and returns a single
+    structured string.  No filtering at all — Gemini decides what's relevant.
+    """
     products = fetch_products()
-    context = ""
-    all_orders = pd.DataFrame()
-
-    q = query.lower() if query else ""
-
-    # ================= STEP 1: COLLECT ALL ORDERS =================
-    for _, p in products.iterrows():
-        orders = fetch_orders(p["id"])
-
-        if orders.empty:
-            continue
-
-        orders["product_name"] = p["product_name"]
-        all_orders = pd.concat([all_orders, orders], ignore_index=True)
-
-    # ================= STEP 2: APPLY FILTERS =================
-    orders = all_orders
-
-    if orders.empty:
-        return "No relevant data found"
-
-    # -------- STATUS FILTER --------
-    if any(word in q for word in ["pending", "not started", "not done"]):
-        orders = orders[orders["status"] == "Not Started"]
-
-    elif any(word in q for word in ["completed", "done", "finished"]):
-        orders = orders[orders["status"] == "Completed"]
-
-    elif "cancelled" in q:
-        orders = orders[orders["status"] == "Cancelled"]
-
-    elif "in progress" in q:
-        orders = orders[orders["status"] == "In Progress"]
-
-    # -------- CUSTOMER FILTER --------
-    if "customer" in q:
-        orders = orders[
-            orders["customer"].str.lower().apply(lambda x: x in q if isinstance(x, str) else False)
-        ]
-    # -------- DATE FILTER --------
-    if any(word in q for word in ["recent", "latest", "last"]):
-        orders = orders.sort_values(by="po_date", ascending=False).head(1)
-
-    if "first" in q or "oldest" in q:
-        orders = orders.sort_values(by="po_date", ascending=True).head(1)
-
-    # -------- MONTH FILTER --------
-    months = {
-        "january": 1, "february": 2, "march": 3, "april": 4,
-        "may": 5, "june": 6, "july": 7, "august": 8,
-        "september": 9, "october": 10, "november": 11, "december": 12
-    }
-
-    for month_name, month_num in months.items():
-        if month_name in q:
-            orders["po_date"] = pd.to_datetime(orders["po_date"], errors="coerce")
-            orders = orders[orders["po_date"].dt.month == month_num]
-            break
-
-    if orders.empty:
-        return "No relevant data found"
-
-    # ================= STEP 3: BUILD CONTEXT =================
-    for _, row in orders.iterrows():
-        context += f"""
-Product: {row['product_name']}
-PO: {row['po_number']}
-Customer: {row['customer']}
-Status: {row['status']}
-Date: {row['po_date']}
----
-"""
-
-    return context
-
-def build_context_with_steps(query=None):
-    products = fetch_products()
-    context = ""
-    all_rows = []
-    q = query.lower() if query else ""
-
+    if products.empty:
+        return "No data available."
+ 
+    parts = []
     for _, p in products.iterrows():
         orders = fetch_orders(p["id"])
         if orders.empty:
             continue
         for _, row in orders.iterrows():
-            all_rows.append((p, row))
-
-    if not all_rows:
-        return build_context_all(query)
-        
-    # status filter
-    if any(word in q for word in ["pending", "not started", "not done"]):
-        all_rows = [(p, r) for p, r in all_rows if r["status"] == "Not Started"]
-    elif any(word in q for word in ["completed", "done", "finished"]):
-        all_rows = [(p, r) for p, r in all_rows if r["status"] == "Completed"]
-    elif "cancelled" in q:
-        all_rows = [(p, r) for p, r in all_rows if r["status"] == "Cancelled"]
-    elif "in progress" in q:
-        all_rows = [(p, r) for p, r in all_rows if r["status"] == "In Progress"]
-
-   # -------- CUSTOMER FILTER --------
-    matched_customer = None
-    
-    for p, row in all_rows:
-        if row["customer"]:
-            cname = row["customer"].lower()
-    
-            if cname in q.split():
-                matched_customer = cname
-                break
-    
-    if matched_customer and "customer" in q:
-        all_rows = [
-            (p, r) for p, r in all_rows
-            if r["customer"] and r["customer"].lower() == matched_customer
-        ]
-
-    # product filter
-
-  # -------- PRODUCT FILTER --------
-
-    products_df = fetch_products()
-    product_names = [p.lower() for p in products_df["product_name"].tolist()]
-    
-    matched_product = None
-    
-    # ✅ STRICT + FLEXIBLE MATCH
-    for pname in product_names:
-        # exact match
-        if pname in q:
-            matched_product = pname
-            break
-    
-        # word match (only meaningful words)
-        pname_words = pname.split()
-        if all(word in q for word in pname_words):
-            matched_product = pname
-            break
-    
-    # apply filter if found
-    if matched_product:
-        all_rows = [
-            (p, r) for p, r in all_rows
-            if p["product_name"].lower() == matched_product
-        ]   
-
-    elif any(word in q for word in ["order", "orders", "po"]):
-            return "No relevant data found"
-    # date filters
-    if any(word in q for word in ["recent", "latest", "last"]):
-        all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"], reverse=True)[:1]
-    elif "first" in q or "oldest" in q:
-        all_rows = sorted(all_rows, key=lambda x: x[1]["po_date"])[:1]
-
-    # month filter
-    months = {
-        "january": 1, "february": 2, "march": 3, "april": 4,
-        "may": 5, "june": 6, "july": 7, "august": 8,
-        "september": 9, "october": 10, "november": 11, "december": 12
-    }
-    for month_name, month_num in months.items():
-        if month_name in q:
-            all_rows = [
-                (p, r) for p, r in all_rows
-                if pd.to_datetime(r["po_date"], errors="coerce").month == month_num
-            ]
-            break
-
-    if not all_rows:
-        return "No relevant data found"
-
-    for p, row in all_rows:
-        steps = fetch_po_steps(int(row["id"]))
-        done_steps, pending_steps = [], []
-
-        if not steps.empty:
-            for _, s in steps.iterrows():
-                desc = s["step_description"]
-                remark = s["remark"] or ""
-                if s["status"] == "Done":
-                    done_steps.append(f"  ✅ {desc}" + (f" [{remark}]" if remark else ""))
-                else:
-                    pending_steps.append(f"  ⏳ {desc}" + (f" [{remark}]" if remark else ""))
-
-        context += f"""
-Product: {p['product_name']}
+            steps = fetch_po_steps(int(row["id"]))
+            done, pending = [], []
+            if not steps.empty:
+                for _, s in steps.iterrows():
+                    desc   = s["step_description"]
+                    remark = f" [{s['remark']}]" if s["remark"] else ""
+                    if s["status"] == "Done":
+                        done.append(f"  ✅ {desc}{remark}")
+                    else:
+                        pending.append(f"  ⏳ {desc}{remark}")
+ 
+            parts.append(f"""Product: {p['product_name']}
 PO: {row['po_number']}
-Customer: {row['customer']}
+Customer: {row['customer'] or 'N/A'}
 Status: {row['status']}
 Date: {row['po_date']}
-Steps completed ({len(done_steps)}):
-{chr(10).join(done_steps) if done_steps else "  None"}
-Steps remaining ({len(pending_steps)}):
-{chr(10).join(pending_steps) if pending_steps else "  All done"}
----
-"""
+Steps completed ({len(done)}):
+{chr(10).join(done) if done else '  None'}
+Steps remaining ({len(pending)}):
+{chr(10).join(pending) if pending else '  All done'}
+---""")
+ 
+    return "\n".join(parts) if parts else "No data available."
 
-    return context
-
-def is_step_query(query):
-    q = query.lower()
-    keywords = [
-        "step", "steps", "remaining", "pending step", "completed step",
-        "which step", "what step", "how many step", "progress",
-        "done step", "next step", "track", "stage", "stages",
-        "going", "current", "happening", "where is", "what is left",
-        "what's left", "what remains", "how far", "how complete",
-        "chal raha", "kya hua", "kitna"
-    ]
-    return any(word in q for word in keywords)
-
-
-def format_steps_response(context, query):
-    import re
-    blocks = context.split("---")
-    result = []
-
-    # extract PO number or customer name from query for filtering
-    po_match = re.search(r'\b(\d{2,})\b', query)
-    po_filter = po_match.group(1) if po_match else None
-
-    # extract customer name filter
-    customer_filter = None
-    q = query.lower()
-
-    for block in blocks:
+def _render_order_cards(context, title="📋 <b>Orders</b>"):
+    cards = []
+    for block in context.split("---"):
         if "PO:" not in block:
             continue
-
-        po, product, customer, status = "", "", "", ""
+        po = customer = status = po_date = product = ""
+        for line in block.strip().splitlines():
+            line = line.strip()
+            if line.startswith("Product:"):  product  = line.split(":", 1)[1].strip()
+            elif line.startswith("PO:"):     po       = line.split(":", 1)[1].strip()
+            elif line.startswith("Customer:"):customer= line.split(":", 1)[1].strip()
+            elif line.startswith("Status:"): status   = line.split(":", 1)[1].strip()
+            elif line.startswith("Date:"):
+                raw = line.split(":", 1)[1].strip()
+                try:    po_date = pd.to_datetime(raw).strftime("%d %b %Y")
+                except: po_date = raw
+ 
+        color = {"Completed": "#16a34a", "Not Started": "#dc2626",
+                 "In Progress": "#f59e0b"}.get(status, "#555")
+        cards.append(f"""<div style="padding:8px 10px;border-radius:10px;margin:6px 0;background:#f1f5f9;">
+📌 <b>{po}</b><br>
+<span style='color:#2563eb;font-weight:600'>{product}</span><br>
+<span style='color:#555'>{customer}</span><br>
+<span style='color:{color};font-weight:600'>{status}</span><br>
+<span style='color:#888'>📅 {po_date}</span>
+</div>""")
+ 
+    if not cards:
+        return None
+    return f"{title}<br>{''.join(cards)}"
+def _render_step_cards(context):
+    cards = []
+    for block in context.split("---"):
+        if "PO:" not in block:
+            continue
+        po = customer = product = status = ""
         done_lines, pending_lines = [], []
         section = None
-
-        for line in block.strip().split("\n"):
+        for line in block.strip().splitlines():
             line = line.strip()
-            if line.startswith("Product:"):
-                product = line.split("Product:")[1].strip()
-            elif line.startswith("PO:"):
-                po = line.split("PO:")[1].strip()
-            elif line.startswith("Customer:"):
-                customer = line.split("Customer:")[1].strip()
-            elif line.startswith("Status:"):
-                status = line.split("Status:")[1].strip()
-            elif line.startswith("Steps completed"):
-                section = "done"
-            elif line.startswith("Steps remaining"):
-                section = "pending"
+            if line.startswith("Product:"):        product  = line.split(":", 1)[1].strip()
+            elif line.startswith("PO:"):           po       = line.split(":", 1)[1].strip()
+            elif line.startswith("Customer:"):     customer = line.split(":", 1)[1].strip()
+            elif line.startswith("Status:"):       status   = line.split(":", 1)[1].strip()
+            elif line.startswith("Steps completed"): section = "done"
+            elif line.startswith("Steps remaining"): section = "pending"
             elif line.startswith("✅") and section == "done":
                 done_lines.append(line.replace("✅", "").strip())
             elif line.startswith("⏳") and section == "pending":
                 pending_lines.append(line.replace("⏳", "").strip())
-
+ 
         if not po:
             continue
-
-        # filter by PO number if mentioned
-        if po_filter and po.strip() != po_filter.strip():
-            continue
-
-        # filter by customer if mentioned
-        if customer and customer.lower() in q:
-            pass  # keep this block
-        elif po_filter is None and customer and customer.lower() not in q:
-            # check if any customer name in query matches
-            pass  # let build_context_with_steps handle filtering
-
-        done_html = "".join(
-            f"<div style='padding:3px 0;color:#15803d;font-size:13px'>✅ {s}</div>"
-            for s in done_lines
-        ) or "<div style='color:#888;font-size:13px'>None yet</div>"
-
-        pending_html = "".join(
-            f"<div style='padding:3px 0;color:#b45309;font-size:13px'>⏳ {s}</div>"
-            for s in pending_lines
-        ) or "<div style='color:#15803d;font-size:13px'>All steps complete!</div>"
-
+ 
         total = len(done_lines) + len(pending_lines)
-        pct = int((len(done_lines) / total * 100)) if total else 0
-
-        result.append(f"""
+        pct   = int(len(done_lines) / total * 100) if total else 0
+ 
+        done_html    = "".join(f"<div style='padding:3px 0;color:#15803d;font-size:13px'>✅ {s}</div>" for s in done_lines) \
+                       or "<div style='color:#888;font-size:13px'>None yet</div>"
+        pending_html = "".join(f"<div style='padding:3px 0;color:#b45309;font-size:13px'>⏳ {s}</div>" for s in pending_lines) \
+                       or "<div style='color:#15803d;font-size:13px'>All steps complete!</div>"
+ 
+        cards.append(f"""
 <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:8px 0;">
   <div style="font-weight:600;font-size:14px;margin-bottom:2px;">📌 {po}</div>
   <div style="color:#2563eb;font-size:13px;font-weight:500;">{product}</div>
@@ -490,238 +221,198 @@ def format_steps_response(context, query):
     <div style="margin-top:6px;">{pending_html}</div>
   </details>
 </div>""")
-
-    if not result:
-        return "No step data found."
-
-    return f"<b>🛠 Step Breakdown</b><br>{''.join(result)}"
-
-def is_simple_query(query):
-    q = query.lower()
-    keywords = [
-        "pending", "not started", "completed",
-        "cancelled", "in progress",
-        "customer", "old", "recent",
-        "last", "latest", "first",
-        "january", "february", "march", "april", "may", "june",
-        "july", "august", "september", "october", "november", "december"
-    ]
-    # exclude analytical/calculation queries — let Gemini handle these
-    bypass_words = [
-        "days", "since", "how long", "passed", "ago", "calculate", "difference",
-        "todays date", "priority", "why", "which", "should", "recommend",
-        "important", "urgent", "analyse", "analyze", "suggest", "compare",
-        "what do you think", "how many", "count", "total"
-    ]
-    if any(word in q for word in bypass_words):
-        return False
-    return any(word in q for word in keywords)
-    
-def format_orders(context, query):
-    lines = context.split("---")
-    result = []
-
-    for item in lines:
-        if "PO:" in item:
-            po = ""
-            customer = ""
-            status = ""
-            date = ""
-            product = ""
-
-            for line in item.split("\n"):
-                if "Product:" in line:
-                    product = line.split("Product:")[1].strip()
-
-                if "PO:" in line:
-                    po = line.split("PO:")[1].strip()
-
-                if "Customer:" in line:
-                    customer = line.split("Customer:")[1].strip()
-
-                if "Status:" in line:
-                    status = line.split("Status:")[1].strip()
-
-                if "Date:" in line:
-                    raw_date = line.split("Date:")[1].strip()
-                    try:
-                        date = pd.to_datetime(raw_date).strftime("%d %b %Y")
-                    except:
-                        date = raw_date
-
-            # 🎨 status colors
-            if status == "Completed":
-                color = "#16a34a"
-            elif status == "Not Started":
-                color = "#dc2626"
-            elif status == "In Progress":
-                color = "#f59e0b"
-            else:
-                color = "#555"
-
-            result.append(
-                f"""<div style="padding:8px 10px;border-radius:10px;margin:6px 0;background:#f1f5f9;">
-📌 <b>{po}</b><br>
-<span style='color:#2563eb; font-weight:600'>{product}</span><br>
-<span style='color:#555'>{customer}</span><br>
-<span style='color:{color}; font-weight:600'>{status}</span><br>
-<span style='color:#888'>📅 {date}</span>
-</div>"""
-            )
-    if not result:
-        return "No orders found"
-
-    q = query.lower()
-
-    if "pending" in q or "not started" in q:
-        title = "📦 <b>Pending Orders</b>"
-    elif "completed" in q:
-        title = "✅ <b>Completed Orders</b>"
-    elif "progress" in q:
-        title = "🚧 <b>In Progress Orders</b>"
-    elif any(word in q for word in ["latest", "last"]):
-        title = "🆕 <b>Latest Order</b>"
-    elif any(m in q for m in [
-        "january","february","march","april","may","june",
-        "july","august","september","october","november","december"
-    ]):
-        title = "📅 <b>Orders by Month</b>"
-    else:
-        title = "📋 <b>Orders</b>"
-
-    return f"{title}<br>{''.join(result)}"
-
+ 
+    return f"<b>🛠 Step Breakdown</b><br>{''.join(cards)}" if cards else None
+ 
+ 
+# ───────────────────────────────────────────────
+# 3.  QUERY CLASSIFIERS  (simpler, less brittle)
+# ───────────────────────────────────────────────
+ 
+_STEP_WORDS = {
+    "step", "steps", "remaining", "pending step", "completed step",
+    "which step", "what step", "how many step", "progress", "done step",
+    "next step", "track", "stage", "stages", "current", "where is",
+    "what is left", "what's left", "what remains", "how far",
+}
+ 
+_STATUS_WORDS = {
+    "pending", "not started", "completed", "cancelled", "in progress",
+}
+ 
+_ANALYTICAL_WORDS = {
+    "days", "since", "how long", "passed", "ago", "calculate",
+    "difference", "priority", "why", "should", "recommend", "urgent",
+    "analyse", "analyze", "suggest", "compare", "how many", "count", "total",
+}
+ 
+def _is_step_query(q): return any(w in q for w in _STEP_WORDS)
+def _is_analytical(q): return any(w in q for w in _ANALYTICAL_WORDS)
+def _is_simple_status(q): return any(w in q for w in _STATUS_WORDS) and not _is_analytical(q)
+ 
+ 
+# ───────────────────────────────────────────────
+# 4.  FILTER CONTEXT FOR A SPECIFIC QUERY
+#     Used ONLY to trim context before fast-path
+#     rendering — NOT as a gatekeeper.
+# ───────────────────────────────────────────────
+ 
+def _filter_context(full_context, q):
+    """
+    Best-effort filter: returns only the blocks relevant to the query.
+    Falls back to the full context if nothing matches.
+    """
+    blocks = [b for b in full_context.split("---") if "PO:" in b]
+    if not blocks:
+        return full_context
+ 
+    def norm(s):
+        return re.sub(r"[\s\-_]+", "", s.lower())
+ 
+    q_norm = norm(q)
+    matched = []
+ 
+    for block in blocks:
+        # extract fields
+        fields = {}
+        for line in block.strip().splitlines():
+            for key in ("Product", "PO", "Customer", "Status", "Date"):
+                if line.strip().startswith(f"{key}:"):
+                    fields[key] = line.split(":", 1)[1].strip().lower()
+ 
+        # score how relevant this block is
+        score = 0
+        for field in fields.values():
+            if norm(field) in q_norm or q_norm in norm(field):
+                score += 2
+            # word-level partial match
+            for word in field.split():
+                if len(word) > 3 and word in q:
+                    score += 1
+ 
+        if score > 0:
+            matched.append((score, block))
+ 
+    if not matched:
+        return full_context          # ← FALLBACK: never block Gemini
+ 
+    matched.sort(key=lambda x: -x[0])
+    return "---\n".join(b for _, b in matched) + "\n---"
+ 
+ 
+# ───────────────────────────────────────────────
+# 5.  MAIN CHAT FUNCTION  (replaces chat_with_data)
+# ───────────────────────────────────────────────
+ 
 def chat_with_data(user_query, product_id=None):
     try:
-        import time
-        import re
-
-        q = user_query.strip().lower()
-
-        if time.time() - st.session_state.last_api_call < 3:
-            return "⏳ Please wait a moment..."
-
+        if time.time() - st.session_state.last_api_call < 2:
+            return "⏳ Please wait a moment before sending another message."
+ 
         st.session_state.last_api_call = time.time()
-
-        # ── Detect what's in the query FIRST ──
-        po_match = re.search(r'\b(\d{2,})\b', q)
-        has_po = po_match is not None
-        has_product = any(p.lower() in q for p in fetch_products()["product_name"].tolist())
-        broadening_words = ["other", "more", "else", "all", "any", "list", "how many", "total", "rest", "another"]
-        is_broadening = any(word in q for word in broadening_words)
-
-    
-        # ── Enrich query with last referenced context for follow-ups ──
-        enriched_query = user_query
-
-        if not has_po and not has_product and not is_broadening:
+ 
+        q = user_query.strip().lower()
+ 
+        # ── Enrich follow-up queries with previously referenced context ──
+        enriched = user_query
+        has_ref = any(w in q for w in ["it", "this", "that", "the order", "the po"])
+        if has_ref:
             if st.session_state.last_referenced_po:
-                enriched_query = f"{user_query} for PO {st.session_state.last_referenced_po}"
+                enriched += f" (referring to PO {st.session_state.last_referenced_po})"
             elif st.session_state.last_referenced_customer:
-                enriched_query = f"{user_query} for {st.session_state.last_referenced_customer}"
+                enriched += f" (for customer {st.session_state.last_referenced_customer})"
             elif st.session_state.last_referenced_product:
-                enriched_query = f"{user_query} for {st.session_state.last_referenced_product}"
-        elif is_broadening and st.session_state.last_referenced_customer:
-            enriched_query = f"{user_query} for customer {st.session_state.last_referenced_customer}"
-
-        context = build_context_with_steps(enriched_query)
-        
-        # 🚨 IMPORTANT FIX: don't fallback if product query failed
-        if not context:
-            context = build_context_all(enriched_query)
-        
-        elif "No relevant data found" in context:
-            return "<div style='padding:8px;border-radius:8px;background:#fef2f2;color:#dc2626;'>❌ No orders found for this product</div>"
-            
-        # ── Save references for future follow-ups ──
-        
-        if has_po:
-            st.session_state.last_referenced_po = po_match.group(1)
-        if has_product:
-            for pname in fetch_products()["product_name"].tolist():
-                if pname.lower() in q:
-                    st.session_state.last_referenced_product = pname
-                    break
-
-        # save customer from context
-        if context != "No relevant data found":
-            for block in context.split("---"):
-                for line in block.split("\n"):
-                    if line.strip().startswith("Customer:"):
-                        cust_val = line.split("Customer:")[1].strip()
-                        if cust_val:
-                            st.session_state.last_referenced_customer = cust_val
-                        break
-
-        # Fast path 1 — simple order queries, no API
-        if is_simple_query(enriched_query) and not is_step_query(enriched_query):
-            return format_orders(context, enriched_query)
-
-        # Fast path 2 — step queries, render as cards, no API
-        if is_step_query(enriched_query):
-            formatted = format_steps_response(context, enriched_query)
-            if formatted and formatted != "No step data found.":
-                return formatted
-
-        # Gemini for everything else
+                enriched += f" (for product {st.session_state.last_referenced_product})"
+ 
+        # ── Always build full context ──
+        full_context = build_full_context()
+ 
+        # ── Filter for fast-path rendering only ──
+        filtered = _filter_context(full_context, enriched.lower())
+ 
+        # ── Update session references from filtered context ──
+        for block in filtered.split("---"):
+            for line in block.strip().splitlines():
+                line = line.strip()
+                if line.startswith("PO:") and re.search(r'\b\d{2,}\b', line):
+                    st.session_state.last_referenced_po = re.search(r'\d+', line).group()
+                elif line.startswith("Customer:"):
+                    val = line.split(":", 1)[1].strip()
+                    if val and val.lower() != "n/a":
+                        st.session_state.last_referenced_customer = val
+                elif line.startswith("Product:"):
+                    val = line.split(":", 1)[1].strip()
+                    if val:
+                        st.session_state.last_referenced_product = val
+ 
+        # ── Fast-path: step queries → styled cards ──
+        if _is_step_query(q):
+            result = _render_step_cards(filtered)
+            if result:
+                return result
+ 
+        # ── Fast-path: simple status/list queries → order cards ──
+        if _is_simple_status(q) and not _is_step_query(q):
+            titles = {
+                "not started": "📦 <b>Pending Orders</b>",
+                "pending":     "📦 <b>Pending Orders</b>",
+                "completed":   "✅ <b>Completed Orders</b>",
+                "in progress": "🚧 <b>In Progress Orders</b>",
+                "cancelled":   "❌ <b>Cancelled Orders</b>",
+            }
+            title = next((v for k, v in titles.items() if k in q), "📋 <b>Orders</b>")
+            result = _render_order_cards(filtered, title)
+            if result:
+                return result
+ 
+        # ── Gemini handles EVERYTHING else ──
         history_text = ""
-        if "chat_history" in st.session_state and len(st.session_state.chat_history) > 1:
+        if "chat_history" in st.session_state:
             recent = st.session_state.chat_history[-6:]
             for role, msg in recent:
-                clean_msg = re.sub(r'<[^>]+>', '', msg).strip()
-                history_text += f"{role}: {clean_msg}\n"
-
-        prompt = f"""You are a helpful business assistant for a manufacturing company.
-Today's date is: {date.today().strftime("%d %B %Y")}
-
-ONLY use the DATA below. Do not assume or invent anything outside it.
-
-CONVERSATION HISTORY (for context on follow-up questions):
-{history_text if history_text else "No previous messages"}
-
+                clean = re.sub(r"<[^>]+>", "", msg).strip()
+                history_text += f"{role}: {clean}\n"
+ 
+        prompt = f"""You are a smart business assistant for a manufacturing company.
+Today's date: {date.today().strftime("%d %B %Y")}
+ 
+Use ONLY the DATA below. Never invent information.
+ 
+CONVERSATION HISTORY:
+{history_text or "No previous messages"}
+ 
 RESPONSE RULES:
-- For order status questions: mention PO number, customer, status, date
-- For counting questions like "how many orders": give the count first, then list each order
-- When listing multiple orders, put EACH order as its own block with a blank line between them
-- Format each order exactly like this (one field per line, no commas):
+- Answer every question, even general ones like "how are you" or "tell me about X"
+- For order/customer/product queries: search the DATA and give a clear answer
+- For counting: give the number first, then list items
+- For date/time questions: calculate using today's date provided above
+- For step/progress: summarise with X/Y done, list ✅ done and ⏳ remaining steps
+- For follow-ups: use the conversation history to understand context
+- For questions where nothing is found in DATA: say so clearly and helpfully
+- Format each order block as:
   PO: [number]
   Customer: [name]
   Status: [status]
   Date: [date]
-- For date/time questions like "how many days since order":
-    * Use today's date provided above
-    * Calculate the difference yourself and state it clearly
-- For step/progress questions:
-    * Show X/Y steps done (Z%) summary
-    * COMPLETED STEPS — one step per line starting with ✅
-    * REMAINING STEPS — one step per line starting with ⏳
-    * Each step on its own line, never in a paragraph
-- If asked "which step is going" or "current step" → show the last ✅ step and next ⏳ step only
-- For follow-up questions → use the PO from conversation history
-- Use ## for section headers
-- Do NOT use **bold** markdown for field labels
-- If nothing relevant found in DATA, say "This order was not found in the system"
-
+- Use ## for section headers if needed
+ 
 DATA:
-{context}
-
-QUESTION:
-{user_query}
+{full_context}
+ 
+USER QUESTION: {enriched}
 """
-
-
-
+ 
         response = model.generate_content(
             prompt,
             generation_config={"temperature": 0.1}
         )
-
-        st.session_state.last_query = q
         return response.text.strip()
-
+ 
     except Exception as e:
         import traceback
-        return f"⚠️ Error: {traceback.format_exc()}"        
+        return f"⚠️ Error: {traceback.format_exc()}"
+ 
+
 
     # ================= SIDEBAR =================
 st.sidebar.header("Mode")
@@ -884,12 +575,9 @@ if st.session_state.mode == "Operations":
                     reply = chat_with_data(user_input)
 
             st.session_state.chat_history.append(("You", user_input))
-
-            # only apply format_bot_reply to Gemini text responses, not already-HTML fast path responses
-            if reply.startswith("<div") or reply.startswith("<b>"):
-                st.session_state.chat_history.append(("Bot", reply))
-            else:
-                st.session_state.chat_history.append(("Bot", format_bot_reply(reply)))
+            st.session_state.chat_history.append(("Bot", reply))
+            
+            
 
             st.session_state.is_processing = False
 
