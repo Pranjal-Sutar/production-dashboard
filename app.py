@@ -516,9 +516,9 @@ Share the Google Sheet with this **service account email** as **Editor**:
 
 📧 **SERVICE ACCOUNT EMAIL**  
 
-
+streamlit-sheets-bot@production-dashboard2.iam.gserviceaccount.com
 *(This is a system account, not a personal Gmail)*
-t
+
 **3️⃣ Link Sheet to Product**
 - Enter the **exact Google Sheet name**
 - Click **Save**
