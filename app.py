@@ -398,7 +398,7 @@ USER QUESTION: {enriched}
         import traceback
         return f"⚠️ Error: {traceback.format_exc()}"
 
- def format_bot_reply(text):
+def format_bot_reply(text):
     blocks = re.split(r'\n{2,}', text.strip())
     html_parts = []
 
@@ -451,6 +451,7 @@ USER QUESTION: {enriched}
 
     inner = "".join(html_parts)
     return f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:6px 0;'>{inner}</div>"
+
 
     # ================= SIDEBAR =================
 st.sidebar.header("Mode")
