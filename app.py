@@ -223,12 +223,7 @@ def _render_step_cards(context):
 </div>""")
  
     return f"<b>🛠 Step Breakdown</b><br>{''.join(cards)}" if cards else None
- 
- 
-# ───────────────────────────────────────────────
-# 3.  QUERY CLASSIFIERS  (simpler, less brittle)
-# ───────────────────────────────────────────────
- 
+  
 _STEP_WORDS = {
     "step", "steps", "remaining", "pending step", "completed step",
     "which step", "what step", "how many step", "progress", "done step",
@@ -250,12 +245,6 @@ def _is_step_query(q): return any(w in q for w in _STEP_WORDS)
 def _is_analytical(q): return any(w in q for w in _ANALYTICAL_WORDS)
 def _is_simple_status(q): return any(w in q for w in _STATUS_WORDS) and not _is_analytical(q)
  
- 
-# ───────────────────────────────────────────────
-# 4.  FILTER CONTEXT FOR A SPECIFIC QUERY
-#     Used ONLY to trim context before fast-path
-#     rendering — NOT as a gatekeeper.
-# ───────────────────────────────────────────────
  
 def _filter_context(full_context, q):
     """
@@ -299,11 +288,7 @@ def _filter_context(full_context, q):
     matched.sort(key=lambda x: -x[0])
     return "---\n".join(b for _, b in matched) + "\n---"
  
- 
-# ───────────────────────────────────────────────
-# 5.  MAIN CHAT FUNCTION  (replaces chat_with_data)
-# ───────────────────────────────────────────────
- 
+
 def chat_with_data(user_query, product_id=None):
     try:
         if time.time() - st.session_state.last_api_call < 2:
@@ -390,6 +375,7 @@ RESPONSE RULES:
 - For follow-ups: use the conversation history to understand context
 - For questions where nothing is found in DATA: say so clearly and helpfully
 - Format each order block as:
+  Product: [product name]  
   PO: [number]
   Customer: [name]
   Status: [status]
@@ -411,8 +397,60 @@ USER QUESTION: {enriched}
     except Exception as e:
         import traceback
         return f"⚠️ Error: {traceback.format_exc()}"
- 
 
+ def format_bot_reply(text):
+    blocks = re.split(r'\n{2,}', text.strip())
+    html_parts = []
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        if "Product:" in block and "PO:" in block and "Customer:" in block and "Status:" in block:
+            lines = block.split("\n")
+            po = customer = status = po_date = product = ""
+            for line in lines:
+                line = line.strip()
+                if line.startswith("Product:"):   product  = line.split("Product:", 1)[1].strip()
+                elif line.startswith("PO:"):       po       = line.split("PO:", 1)[1].strip()
+                elif line.startswith("Customer:"): customer = line.split("Customer:", 1)[1].strip()
+                elif line.startswith("Status:"):   status   = line.split("Status:", 1)[1].strip()
+                elif line.startswith("Date:"):
+                    raw = line.split("Date:", 1)[1].strip()
+                    try:    po_date = pd.to_datetime(raw).strftime("%d %b %Y")
+                    except: po_date = raw
+            color = {"Completed": "#16a34a", "Not Started": "#dc2626", "In Progress": "#f59e0b"}.get(status, "#555")
+            if po:
+                html_parts.append(f"""<div style="background:#f1f5f9;border-radius:8px;padding:8px 10px;margin:5px 0;font-size:12px;">
+  <div style="color:#2563eb;font-weight:600;font-size:13px">{product}</div>
+  <div style="font-weight:600;color:#1e293b">📌 {po}</div>
+  <div style="color:#555">👤 {customer}</div>
+  <div style="color:{color};font-weight:500">● {status}</div>
+  <div style="color:#888">📅 {po_date}</div>
+</div>""")
+                continue
+
+        for line in block.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
+            if line.startswith("## "):
+                html_parts.append(f"<div style='font-weight:600;font-size:13px;margin:10px 0 4px;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:4px'>{line[3:]}</div>")
+            elif line.startswith("# "):
+                html_parts.append(f"<div style='font-weight:600;font-size:14px;margin:8px 0 4px;color:#1e293b'>{line[2:]}</div>")
+            elif line.startswith("✅"):
+                html_parts.append(f"<div style='padding:2px 0;color:#15803d;font-size:12px'>{line}</div>")
+            elif line.startswith("⏳"):
+                html_parts.append(f"<div style='padding:2px 0;color:#b45309;font-size:12px'>{line}</div>")
+            elif line.startswith("- ") or line.startswith("* "):
+                html_parts.append(f"<div style='padding:3px 0 3px 8px;font-size:12px;color:#374151;border-left:2px solid #e2e8f0;margin:2px 0'>• {line[2:]}</div>")
+            else:
+                html_parts.append(f"<div style='font-size:13px;margin:2px 0;color:#374151'>{line}</div>")
+
+    inner = "".join(html_parts)
+    return f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:6px 0;'>{inner}</div>"
 
     # ================= SIDEBAR =================
 st.sidebar.header("Mode")
@@ -575,7 +613,10 @@ if st.session_state.mode == "Operations":
                     reply = chat_with_data(user_input)
 
             st.session_state.chat_history.append(("You", user_input))
-            st.session_state.chat_history.append(("Bot", reply))
+            if reply.startswith("<div") or reply.startswith("<b>"):
+                st.session_state.chat_history.append(("Bot", reply))
+            else:
+                st.session_state.chat_history.append(("Bot", format_bot_reply(reply)))
             
             
 
