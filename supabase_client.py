@@ -4,10 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-url = os.getenv("SUPABASE_URL")
-key = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-print("URL =", repr(url))
-print("KEY EXISTS =", bool(key))
+if not SUPABASE_URL:
+    raise Exception("SUPABASE_URL is missing")
 
-supabase = create_client(url, key)
+if not SUPABASE_KEY:
+    raise Exception("SUPABASE_KEY is missing")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
